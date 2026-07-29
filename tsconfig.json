@@ -7,7 +7,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["@cloudflare/workers-types", "jest"],
+    "types": ["@cloudflare/workers-types"],
     "lib": ["ES2022"]
   },
   "include": ["src/**/*", "scripts/**/*"],

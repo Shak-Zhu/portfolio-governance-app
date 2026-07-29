@@ -10,7 +10,7 @@ import * as steps from './api/steps';
 import * as stages from './api/stages';
 import * as audit from './api/audit';
 import * as projectLinks from './api/projectLinks';
-import { buildGanttData, calculateGanttBars } from './lib/gantt';
+import { buildGanttData } from './lib/gantt';
 
 interface Env {
   DB: D1Database;
@@ -473,18 +473,10 @@ app.get('/api/portfolios/:portfolioId/gantt', async (c) => {
     const projectsList = await projects.listProjects(c.env.DB, portfolioId, false);
     const allSteps = await steps.listAllSteps(c.env.DB, portfolioId);
     
+    // buildGanttData 内部按真实 timeline 单元格计算条形，并分离未排期步骤
     const ganttData = buildGanttData(projectsList, allSteps, start, end, scale);
     
-    // 为每个项目计算甘特条
-    const rowsWithBars = ganttData.rows.map(row => ({
-      ...row,
-      bars: calculateGanttBars(row.steps, start, end, scale),
-    }));
-    
-    return Response.json({
-      ...ganttData,
-      rows: rowsWithBars,
-    });
+    return Response.json(ganttData);
   } catch (e) {
     return handleError(e);
   }

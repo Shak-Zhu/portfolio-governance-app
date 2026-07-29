@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * WP-002A Smoke Test - 完整功能测试
- * 运行方式: API_URL=http://localhost:8787/api node scripts/smoke-test.js
+ * Shak 项目组合治理系统 Smoke Test（WP-002A + WP-005）
+ * 覆盖：组合/项目/步骤/关联资料/Stage/归档/审计，以及
+ * WP-005 的 TBD 未排期分组、TBD→Plan→TBD 迁移、日/周/月长区间时间轴可靠性。
+ * 运行方式: API_URL=http://127.0.0.1:8789/api node scripts/smoke-test.js
  */
 
 const API_BASE = process.env.API_URL || 'http://localhost:8787/api';
@@ -378,6 +380,145 @@ async function runTests() {
   });
   if (r.passed) passed++; else failed++;
   results.push({ name: '删除步骤', passed: r.passed });
+
+  // ===== WP-005：TBD 未排期工作包与时间轴可靠性 =====
+
+  // 28. 创建专用项目 + 两个 TBD 步骤
+  let tbdProjectId, tbdStepId;
+  r = await test('28. WP-005 创建 TBD 场景项目与两个未排期步骤', async () => {
+    const p = await api(`/portfolios/${portfolioId}/projects`, {
+      method: 'POST',
+      body: { title: 'TBD 场景项目', owner: 'PM', stage: 'Test Stage', health: 'blue', actor: 'smoke-test' }
+    });
+    if (p.status !== 201) throw new Error(`项目创建失败: ${p.status}`);
+    tbdProjectId = p.data.id;
+
+    const s1 = await api(`/projects/${tbdProjectId}/steps`, {
+      method: 'POST', body: { name: 'TBD 工作包 A', actor: 'smoke-test' }
+    });
+    if (s1.status !== 201 || s1.data.status !== 'tbd') throw new Error('TBD A 应为 tbd 状态');
+    tbdStepId = s1.data.id;
+
+    const s2 = await api(`/projects/${tbdProjectId}/steps`, {
+      method: 'POST', body: { name: 'TBD 工作包 B', actor: 'smoke-test' }
+    });
+    if (s2.status !== 201 || s2.data.status !== 'tbd') throw new Error('TBD B 应为 tbd 状态');
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 创建 TBD 场景', passed: r.passed });
+
+  // 29. TBD 步骤出现在 unscheduled 分组，且不在任何日期轴条形中
+  r = await test('29. WP-005 TBD 步骤进入未排期分组，不进日期轴', async () => {
+    const { status, data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-08-01&end=2026-08-31&scale=day`);
+    if (status !== 200) throw new Error(`甘特获取失败: ${status}`);
+    if (!Array.isArray(data.unscheduled)) throw new Error('缺少 unscheduled 字段');
+    const group = data.unscheduled.find(g => g.project.id === tbdProjectId);
+    if (!group) throw new Error('未排期分组应含 TBD 项目');
+    if (group.steps.length !== 2) throw new Error(`该项目应有 2 个未排期步骤，实际 ${group.steps.length}`);
+    if (group.project.owner !== 'PM' || group.project.stage !== 'Test Stage') {
+      throw new Error('未排期分组应保留 Owner 和 Stage');
+    }
+    // 该项目在日期轴行内不得出现任何条形
+    const row = data.rows.find(x => x.project.id === tbdProjectId);
+    if (row && row.bars.length !== 0) throw new Error('TBD 项目不应有日期轴条形');
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 TBD 分组隔离', passed: r.passed });
+
+  // 30. TBD → Plan：补齐日期并改状态后进入日期轴，离开未排期区
+  r = await test('30. WP-005 TBD→Plan 后进入日期轴', async () => {
+    const upd = await api(`/steps/${tbdStepId}`, {
+      method: 'PUT',
+      body: { start_date: '2026-08-05', end_date: '2026-08-12', status: 'planned', actor: 'smoke-test' }
+    });
+    if (upd.status !== 200) throw new Error(`更新失败: ${upd.status}`);
+
+    const { data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-08-01&end=2026-08-31&scale=day`);
+    const group = data.unscheduled.find(g => g.project.id === tbdProjectId);
+    // A 已排期，B 仍是 TBD -> 组内应剩 1 个
+    if (!group || group.steps.length !== 1) throw new Error(`未排期应剩 1 个，实际 ${group ? group.steps.length : 0}`);
+    const row = data.rows.find(x => x.project.id === tbdProjectId);
+    if (!row || row.bars.length !== 1) throw new Error('应产生 1 根条形');
+    // 条形应落在 08-05 格
+    const cell = data.timeline[row.bars[0].colStart];
+    if (cell.date !== '2026-08-05') throw new Error(`条形起点应为 08-05，实际 ${cell.date}`);
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 TBD→Plan 落位', passed: r.passed });
+
+  // 31. Plan → TBD：清空日期后回到未排期区，离开日期轴
+  r = await test('31. WP-005 Plan→TBD 后回到未排期区', async () => {
+    const upd = await api(`/steps/${tbdStepId}`, {
+      method: 'PUT',
+      body: { start_date: '', end_date: '', actor: 'smoke-test' }
+    });
+    if (upd.status !== 200) throw new Error(`更新失败: ${upd.status}`);
+    if (upd.data.status !== 'tbd') throw new Error(`清空日期后状态应回到 tbd，实际 ${upd.data.status}`);
+
+    const { data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-08-01&end=2026-08-31&scale=day`);
+    const group = data.unscheduled.find(g => g.project.id === tbdProjectId);
+    if (!group || group.steps.length !== 2) throw new Error(`清空后未排期应恢复 2 个，实际 ${group ? group.steps.length : 0}`);
+    const row = data.rows.find(x => x.project.id === tbdProjectId);
+    if (row && row.bars.length !== 0) throw new Error('清空日期后不应有条形');
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 Plan→TBD 回退', passed: r.passed });
+
+  // 32. 日视图 366 天：timeline 连续无截断
+  r = await test('32. WP-005 日视图 366 天连续无截断', async () => {
+    const { status, data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-01-01&end=2027-01-01&scale=day`);
+    if (status !== 200) throw new Error(`获取失败: ${status}`);
+    if (data.timeline.length !== 366) throw new Error(`应有 366 天，实际 ${data.timeline.length}`);
+    if (data.timeline[0].date !== '2026-01-01') throw new Error('首格错误');
+    if (data.timeline[365].date !== '2027-01-01') throw new Error('尾格错误');
+    if (data.config.cellCount !== 366) throw new Error('cellCount 不一致');
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 日视图 366 天', passed: r.passed });
+
+  // 33. 周视图 260 周
+  r = await test('33. WP-005 周视图 260 周连续无截断', async () => {
+    const startMs = new Date('2026-01-05T00:00:00Z').getTime();
+    const endMs = startMs + (260 * 7 - 1) * 24 * 3600 * 1000;
+    const end = new Date(endMs).toISOString().slice(0, 10);
+    const { status, data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-01-05&end=${end}&scale=week`);
+    if (status !== 200) throw new Error(`获取失败: ${status}`);
+    if (data.timeline.length !== 260) throw new Error(`应有 260 周，实际 ${data.timeline.length}`);
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 周视图 260 周', passed: r.passed });
+
+  // 34. 月视图 120 月
+  r = await test('34. WP-005 月视图 120 月连续无截断', async () => {
+    const { status, data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-01-01&end=2035-12-31&scale=month`);
+    if (status !== 200) throw new Error(`获取失败: ${status}`);
+    if (data.timeline.length !== 120) throw new Error(`应有 120 月，实际 ${data.timeline.length}`);
+    if (data.timeline[0].date !== '2026-01-01') throw new Error('首月错误');
+    if (data.timeline[119].date !== '2035-12-01') throw new Error('末月错误');
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 月视图 120 月', passed: r.passed });
+
+  // 35. 长跨度步骤按真实月格落位（不再 /30 漂移）
+  r = await test('35. WP-005 长跨度步骤按真实月格落位', async () => {
+    // 新建一个带长跨度步骤的项目
+    const p = await api(`/portfolios/${portfolioId}/projects`, {
+      method: 'POST', body: { title: '长跨度项目', owner: 'PM', actor: 'smoke-test' }
+    });
+    await api(`/projects/${p.data.id}/steps`, {
+      method: 'POST',
+      body: { name: '跨年步骤', start_date: '2028-03-15', end_date: '2030-09-20', status: 'planned', actor: 'smoke-test' }
+    });
+    const { data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-01-01&end=2035-12-31&scale=month`);
+    const row = data.rows.find(x => x.project.id === p.data.id);
+    if (!row || row.bars.length !== 1) throw new Error('应有 1 根条形');
+    const startCell = data.timeline[row.bars[0].colStart];
+    const endCell = data.timeline[row.bars[0].colEnd];
+    if (startCell.date !== '2028-03-01') throw new Error(`起点应落在 2028-03，实际 ${startCell.date}`);
+    if (endCell.date !== '2030-09-01') throw new Error(`终点应落在 2030-09，实际 ${endCell.date}`);
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: 'WP-005 长跨度月格落位', passed: r.passed });
 
   // 清理测试数据
   console.log('\n🧹 清理测试数据...');

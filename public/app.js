@@ -219,91 +219,142 @@ async function loadGantt() {
   }
 }
 
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function renderGantt(data) {
   const timeHeader = document.getElementById('timeHeader');
   const ganttBody = document.getElementById('ganttBody');
-  
-  // 渲染时间轴头部
+
   const colWidth = state.ganttScale === 'day' ? 56 : state.ganttScale === 'week' ? 70 : 80;
   const colsCount = data.timeline.length;
-  
+  const gridTemplate = `repeat(${colsCount}, ${colWidth}px)`;
+
+  // 时间轴头部：严格按真实单元格数量渲染，不做静默截断
   timeHeader.innerHTML = data.timeline.map(cell => {
     let cls = 'time-cell';
     if (cell.isWeekend) cls += ' weekend';
     if (cell.isCurrent) cls += ' current';
-    return `<div class="${cls}" style="min-width:${colWidth}px">${cell.label}</div>`;
+    const title = cell.rangeLabel ? ` title="${escapeHtml(cell.rangeLabel)}"` : '';
+    return `<div class="${cls}"${title}>${escapeHtml(cell.label)}</div>`;
   }).join('');
-  
-  timeHeader.style.gridTemplateColumns = `repeat(${colsCount}, ${colWidth}px)`;
-  
-  // 渲染甘特行
+  timeHeader.style.gridTemplateColumns = gridTemplate;
+
   if (data.rows.length === 0) {
     ganttBody.innerHTML = '<div class="empty">暂无项目数据</div>';
+    renderUnscheduled(data.unscheduled);
     return;
   }
-  
+
   ganttBody.innerHTML = data.rows.map(row => {
     const p = row.project;
     const level = row.level;
     const indent = level > 0 ? `<span class="tree">${'├ '.repeat(level)}</span>` : '';
-    
-    // 健康状态徽章
+
     let healthBadge = '';
     if (p.health && p.health !== 'unknown') {
       const healthMap = { green: '🟢', blue: '🔵', amber: '🟡', red: '🔴' };
       healthBadge = healthMap[p.health] || '';
     }
-    
-    // 状态徽章
+
     const statusClass = p.status === 'completed' ? 'badge completed' : p.is_archived ? 'badge archived' : '';
     const statusLabel = p.is_archived ? '已归档' : p.status === 'completed' ? '已完成' : '执行中';
-    
-    // 渲染甘特条
-    const barsHtml = renderGanttBars(row.bars, colsCount, colWidth);
-    
+
+    const barsHtml = renderGanttBars(row.bars, colsCount);
+
     return `
       <div class="gantt-row ${level > 0 ? 'level-' + level : 'parent'}">
-        <div class="project-cell">
-          <div class="project-name">${indent}${p.title}</div>
-          ${p.expectation ? `<div class="expectation">${p.expectation.substring(0, 60)}${p.expectation.length > 60 ? '...' : ''}</div>` : ''}
+        <div class="project-cell col-project">
+          <div class="project-name">${indent}${escapeHtml(p.title)}</div>
+          ${p.expectation ? `<div class="expectation">${escapeHtml(p.expectation.substring(0, 60))}${p.expectation.length > 60 ? '...' : ''}</div>` : ''}
         </div>
-        <div class="status-cell">
+        <div class="status-cell col-status">
           <div class="badges">
-            <span class="badge">${getOwner(p)}</span>
+            <span class="badge">${escapeHtml(getOwner(p))}</span>
             ${healthBadge ? `<span class="badge ${getHealthClass(p.health)}">${healthBadge}</span>` : ''}
-            <span class="badge">${getStageName(p.stage)}</span>
+            <span class="badge">${escapeHtml(getStageName(p.stage))}</span>
           </div>
           <span class="badge ${statusClass}">${statusLabel}</span>
         </div>
-        <div class="timeline" style="grid-template-columns: repeat(${colsCount}, ${colWidth}px); --column-width: ${colWidth}px;">
+        <div class="timeline" style="grid-template-columns: ${gridTemplate}; --column-width: ${colWidth}px;">
           ${barsHtml}
         </div>
       </div>
     `;
   }).join('');
+
+  renderUnscheduled(data.unscheduled);
 }
 
-function renderGanttBars(bars, colsCount, colWidth) {
-  const cells = Array(colsCount).fill('');
-  
-  bars.forEach(bar => {
-    if (bar.isTbd) {
-      // TBD 步骤显示在右侧说明
-      const tbdHtml = `<span class="tbd-note">TBD: ${bar.stepName}</span>`;
-      cells[cells.length - 1] = tbdHtml;
-    } else {
-      // 有日期的步骤
-      const width = (bar.colEnd - bar.colStart + 1) * colWidth - 8;
-      const left = bar.colStart * colWidth + 4;
-      cells[bar.colStart] = `
-        <div class="step-bar ${bar.status}" style="position:absolute;left:${left}px;width:${width}px;min-width:40px">
-          ${bar.stepName}
+// 甘特条使用 CSS Grid 的 grid-column 落位，天然对齐时间轴单元格边界，
+// 不再用绝对定位 left/width（避免相对每个格重复偏移导致越界）。
+function renderGanttBars(bars, colsCount) {
+  if (!bars || bars.length === 0) return '';
+  return bars.map((bar, i) => {
+    const colStart = bar.colStart + 1; // grid-column 从 1 开始
+    const colEnd = bar.colEnd + 2;     // 结束列 +1（闭区间）再 +1（grid 线）
+    return `
+      <div class="step-bar ${escapeHtml(bar.status)}"
+           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${i + 1};"
+           title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）">
+        ${escapeHtml(bar.stepName)}
+      </div>
+    `;
+  }).join('');
+}
+
+// 未排期工作包区域：按项目分组的固定尺寸灰色虚线卡
+function renderUnscheduled(groups) {
+  const section = document.getElementById('unscheduledSection');
+  const body = document.getElementById('unscheduledBody');
+  const countEl = document.getElementById('unscheduledCount');
+  if (!section || !body) return;
+
+  const validGroups = (groups || []).filter(g => g && g.steps && g.steps.length > 0);
+
+  // 无 TBD 时整个区域隐藏
+  if (validGroups.length === 0) {
+    section.hidden = true;
+    body.innerHTML = '';
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+
+  const totalCards = validGroups.reduce((sum, g) => sum + g.steps.length, 0);
+  if (countEl) countEl.textContent = `${validGroups.length} 个项目 · ${totalCards} 个工作包`;
+
+  body.innerHTML = validGroups.map(group => {
+    const p = group.project;
+    const owner = getOwner(p);
+    const stage = getStageName(p.stage);
+    const cards = group.steps.map(step => `
+      <div class="tbd-card" title="${escapeHtml(step.name)}">
+        <span class="tbd-card-project">${escapeHtml(p.title)}</span>
+        <span class="tbd-card-name">${escapeHtml(step.name)}</span>
+        <span class="tbd-card-tag">未排期 · 无日期</span>
+      </div>
+    `).join('');
+
+    return `
+      <div class="unscheduled-group">
+        <div class="unscheduled-group-head">
+          <strong>${escapeHtml(p.title)}</strong>
+          <span class="badge">${escapeHtml(owner)}</span>
+          <span class="badge">${escapeHtml(stage)}</span>
         </div>
-      `;
-    }
-  });
-  
-  return cells.map((content, i) => `<div style="position:relative;min-width:${colWidth}px">${content}</div>`).join('');
+        <div class="tbd-card-row">${cards}</div>
+      </div>
+    `;
+  }).join('');
+
+  section.hidden = false;
 }
 
 // ========== 项目主数据 ==========

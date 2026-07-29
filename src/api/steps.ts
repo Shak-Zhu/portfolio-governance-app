@@ -161,18 +161,20 @@ export async function updateStep(
   
   if (updates.length === 0) return existing;
   
-  // 自动调整状态：如果是 TBD（有日期后变 planned）或有日期变无日期
-  if (data.start_date || data.end_date) {
-    const newStartDate = data.start_date ?? existing.start_date;
-    const newEndDate = data.end_date ?? existing.end_date;
+  // 自动调整状态（仅当调用方未显式指定 status 时）：
+  // - 日期被补齐（新开始+结束都合法）且原为 tbd -> planned，进入日期轴
+  // - 任一日期被清空/缺失（含空串）-> tbd，回到未排期工作包区
+  // 注意：空串 '' 也代表“清空日期”，必须用 !== undefined 判断字段是否被触及。
+  const touchesDates = data.start_date !== undefined || data.end_date !== undefined;
+  if (touchesDates && data.status === undefined) {
+    const newStartDate = data.start_date !== undefined ? (data.start_date || null) : (existing.start_date || null);
+    const newEndDate = data.end_date !== undefined ? (data.end_date || null) : (existing.end_date || null);
     if (newStartDate && newEndDate) {
-      // 有日期
-      if (existing.status === 'tbd' && data.status === undefined) {
+      if (existing.status === 'tbd') {
         updates.push('status = ?');
         values.push('planned');
       }
     } else {
-      // 无日期
       updates.push('status = ?');
       values.push('tbd');
     }

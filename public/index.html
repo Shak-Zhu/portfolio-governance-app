@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>AI 项目组合治理</title>
+  <title>Shak 项目组合治理系统</title>
   <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
   <main class="app-shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">PROJECT PORTFOLIO GOVERNANCE</p>
-        <h1>AI 项目组合治理</h1>
+        <p class="eyebrow">SHAK PROJECT PORTFOLIO GOVERNANCE</p>
+        <h1>Shak 项目组合治理系统</h1>
         <p>项目主数据、步骤计划、组合甘特图与归档中心共用一套数据。</p>
       </div>
       <div class="connection-state">
@@ -72,14 +72,28 @@
         <span><i class="tbd"></i>TBD：无日期，不占用时间轴</span>
       </div>
       <div class="gantt-card">
-        <div class="gantt-header">
-          <div>项目 / 业务预期</div>
-          <div>Owner · Stage · Health</div>
-          <div id="timeHeader" class="time-header"></div>
+        <div class="gantt-scroll">
+          <div class="gantt-header">
+            <div class="col-project">项目 / 业务预期</div>
+            <div class="col-status">Owner · Stage · Health</div>
+            <div id="timeHeader" class="time-header"></div>
+          </div>
+          <div id="ganttBody"></div>
         </div>
-        <div id="ganttBody"></div>
       </div>
       <p class="tip">每根条代表一条可维护的步骤计划，条内显示步骤名称。项目日期由步骤自动汇总，不再单独画第二份计划。</p>
+
+      <!-- 未排期工作包区域：无合法日期或状态为 tbd 的步骤，不进入日期轴 -->
+      <section id="unscheduledSection" class="unscheduled-section" hidden>
+        <div class="unscheduled-head">
+          <div>
+            <h3>未排期工作包</h3>
+            <p>以下工作包缺少合法开始/结束日期或状态为 TBD，不占用时间轴。补齐日期并切换为非 TBD 状态后，会自动进入上方甘特图。</p>
+          </div>
+          <span id="unscheduledCount" class="unscheduled-count"></span>
+        </div>
+        <div id="unscheduledBody" class="unscheduled-groups"></div>
+      </section>
     </section>
 
     <!-- 项目主数据视图 -->
