@@ -1,0 +1,22 @@
+name = "pmo-governance"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+# 静态资源目录：非 /api/* 请求由 env.ASSETS 提供
+# html_handling = "none" 禁用 /index.html → / 的自动 307 重定向，使其直接返回 200
+[assets]
+directory = "./public"
+binding = "ASSETS"
+html_handling = "none"
+not_found_handling = "none"
+
+# 已由 Codex PM/基础设施负责人创建并验证的生产 D1 绑定。
+# 不含任何密钥；数据库凭证由 Wrangler OAuth 管理。
+[[d1_databases]]
+binding = "DB"
+database_name = "pmo-governance-prod"
+database_id = "abb3c863-7689-40d1-9e69-f5b64b261f9a"
+
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "pmo-governance-backups-prod"

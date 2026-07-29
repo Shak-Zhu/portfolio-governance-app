@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI 项目组合治理</title>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PROJECT PORTFOLIO GOVERNANCE</p>
+        <h1>AI 项目组合治理</h1>
+        <p>项目主数据、步骤计划、组合甘特图与归档中心共用一套数据。</p>
+      </div>
+      <div class="connection-state">
+        <span></span>
+        <div>
+          <strong>Cloudflare D1</strong>
+          <small>多项目治理 Web App</small>
+        </div>
+      </div>
+    </header>
+
+    <section class="portfolio-switcher">
+      <div>
+        <span class="label">当前项目组合 / 表</span>
+        <select id="portfolioSelect"></select>
+        <small id="portfolioHint"></small>
+      </div>
+      <div>
+        <button id="newPortfolioBtn" class="secondary">+ 新建项目组合</button>
+        <button id="stageManageBtn" class="secondary">管理 Stage 字段</button>
+      </div>
+    </section>
+
+    <section class="dashboard-strip">
+      <article><span>当前组合项目数</span><strong id="totalCount">0</strong></article>
+      <article><span>执行中</span><strong id="inProgressCount">0</strong></article>
+      <article><span>已完成，待归档</span><strong id="completeCount">0</strong></article>
+      <article><span>已归档</span><strong id="archivedCount">0</strong></article>
+    </section>
+
+    <nav class="main-tabs">
+      <button class="main-tab active" data-view="gantt">组合甘特图</button>
+      <button class="main-tab" data-view="data">项目主数据</button>
+      <button class="main-tab" data-view="archive">归档中心</button>
+    </nav>
+
+    <!-- 甘特图视图 -->
+    <section id="ganttView" class="view active">
+      <div class="toolbar">
+        <div class="range-controls">
+          <label>开始 <input id="rangeStart" type="date"/></label>
+          <label>结束 <input id="rangeEnd" type="date"/></label>
+        </div>
+        <div class="toolbar-right">
+          <div class="segmented">
+            <button class="scale active" data-scale="week">周</button>
+            <button class="scale" data-scale="day">日</button>
+            <button class="scale" data-scale="month">月</button>
+          </div>
+          <button id="resetRangeBtn" class="secondary">重置区间</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="done"></i>已完成</span>
+        <span><i class="planned"></i>已确认计划</span>
+        <span><i class="risk"></i>风险 / 待决</span>
+        <span><i class="blocked"></i>前置依赖 / 阻塞</span>
+        <span><i class="tbd"></i>TBD：无日期，不占用时间轴</span>
+      </div>
+      <div class="gantt-card">
+        <div class="gantt-header">
+          <div>项目 / 业务预期</div>
+          <div>Owner · Stage · Health</div>
+          <div id="timeHeader" class="time-header"></div>
+        </div>
+        <div id="ganttBody"></div>
+      </div>
+      <p class="tip">每根条代表一条可维护的步骤计划，条内显示步骤名称。项目日期由步骤自动汇总，不再单独画第二份计划。</p>
+    </section>
+
+    <!-- 项目主数据视图 -->
+    <section id="dataView" class="view">
+      <div class="data-toolbar">
+        <div>
+          <h2>项目主数据</h2>
+          <p>当前组合有一张独立项目主数据表，步骤计划在编辑项目时维护。</p>
+        </div>
+        <div class="data-actions">
+          <button id="addBtn" class="primary">+ 新增项目</button>
+        </div>
+      </div>
+      <div id="stageSummary" class="stage-summary"></div>
+      <div class="mcp-note">
+        <strong>数据管理模型：</strong>Cloudflare D1 持久化存储，Worker 重部署不丢失数据。
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>项目 / 工作流</th>
+              <th>Owner</th>
+              <th>业务预期 / 验收</th>
+              <th>Stage</th>
+              <th>Health</th>
+              <th>状态</th>
+              <th>关联资料</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="dataBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 归档中心视图 -->
+    <section id="archiveView" class="view">
+      <div class="data-toolbar">
+        <div>
+          <h2>归档中心</h2>
+          <p>按当前项目组合聚类。子项目完成时只标记完成；仅总项目及全部后代完成后，才能整体归档。</p>
+        </div>
+      </div>
+      <div id="archiveBody" class="archive-grid"></div>
+    </section>
+  </main>
+
+  <!-- 项目编辑对话框 -->
+  <dialog id="projectDialog">
+    <form id="projectForm" method="dialog">
+      <div class="dialog-title">
+        <div>
+          <p class="eyebrow">PROJECT MASTER DATA</p>
+          <h2 id="projectDialogTitle">新增项目</h2>
+        </div>
+        <button type="button" class="icon-btn close-dialog">×</button>
+      </div>
+      <input id="projectId" type="hidden"/>
+      <div class="form-grid">
+        <label>项目名称<input id="title" required/></label>
+        <label>父级项目<select id="parentId"><option value="">无（顶级项目）</option></select></label>
+        <label>Owner<input id="owner" required/></label>
+        <label>Stage<select id="stage"></select></label>
+        <label>Health
+          <select id="health">
+            <option value="unknown">未知</option>
+            <option value="green">绿色（正常）</option>
+            <option value="blue">蓝色（已确认）</option>
+            <option value="amber">黄色（风险）</option>
+            <option value="red">红色（阻塞）</option>
+          </select>
+        </label>
+        <label class="wide">业务预期 / 验收<input id="expectation"/></label>
+        <label class="wide">依赖 / 风险 / 需决策<input id="risk"/></label>
+      </div>
+      
+      <!-- 步骤计划编辑区 -->
+      <section class="steps-editor">
+        <div class="section-head">
+          <div>
+            <h3>步骤计划</h3>
+            <p>甘特条来自这里；有日期的步骤才会画在时间轴。</p>
+          </div>
+          <button id="addStepBtn" type="button" class="secondary">+ 添加步骤</button>
+        </div>
+        <div id="stepsForm"></div>
+      </section>
+      
+      <!-- 关联资料编辑区 -->
+      <section class="steps-editor">
+        <div class="section-head">
+          <div>
+            <h3>关联资料</h3>
+            <p>维护项目相关文档链接，点击在新窗口打开。</p>
+          </div>
+          <button id="addLinkBtn" type="button" class="secondary">+ 添加资料</button>
+        </div>
+        <div id="linksForm"></div>
+      </section>
+      
+      <div class="dialog-foot">
+        <button type="button" class="secondary close-dialog">取消</button>
+        <button class="primary" type="submit">保存并自动重算</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 组合创建对话框 -->
+  <dialog id="portfolioDialog">
+    <form id="portfolioForm" method="dialog">
+      <div class="dialog-title">
+        <div>
+          <p class="eyebrow">PORTFOLIO</p>
+          <h2>新建项目组合</h2>
+        </div>
+        <button type="button" class="icon-btn close-dialog">×</button>
+      </div>
+      <div class="form-grid">
+        <label class="wide">组合名称<input id="portfolioName" required placeholder="例如：B2B AI 项目组合"/></label>
+        <label class="wide">说明<textarea id="portfolioDescription" placeholder="该组合用于哪些项目聚类与汇报？"></textarea></label>
+      </div>
+      <div class="dialog-foot">
+        <button type="button" class="secondary close-dialog">取消</button>
+        <button class="primary" type="submit">新建空项目组合</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Stage 管理对话框 -->
+  <dialog id="stageDialog">
+    <form id="stageForm" method="dialog">
+      <div class="dialog-title">
+        <div>
+          <p class="eyebrow">CUSTOM STAGE FIELDS</p>
+          <h2>Stage 字段管理</h2>
+        </div>
+        <button type="button" class="icon-btn close-dialog">×</button>
+      </div>
+      <p class="dialog-note">已被项目使用的 Stage 不可删除或改名。</p>
+      <div class="stage-add">
+        <input id="newStageName" placeholder="例如：Data Readiness"/>
+        <button class="primary" type="submit">新增 Stage</button>
+      </div>
+      <div id="stageList" class="stage-list"></div>
+    </form>
+  </dialog>
+
+  <!-- 确认对话框 -->
+  <dialog id="confirmDialog">
+    <form id="confirmForm" method="dialog">
+      <div class="dialog-title">
+        <h2 id="confirmTitle">确认操作</h2>
+        <button type="button" class="icon-btn close-dialog">×</button>
+      </div>
+      <p id="confirmMessage"></p>
+      <div class="dialog-foot">
+        <button type="button" class="secondary close-dialog">取消</button>
+        <button id="confirmBtn" class="danger" type="submit">确认</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

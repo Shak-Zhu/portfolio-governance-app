@@ -1,0 +1,846 @@
+// AI 项目组合治理 - 前端应用
+const API_BASE = '/api';
+
+// ========== 状态管理 ==========
+let state = {
+  currentPortfolioId: null,
+  portfolios: [],
+  projects: [],
+  stages: [],
+  ganttScale: 'week',
+  ganttRange: { start: '', end: '' },
+  editingSteps: {},  // 跟踪编辑中的步骤
+};
+
+// ========== 工具函数 ==========
+async function api(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || data.message || 'API 错误');
+  return data;
+}
+
+function apiRaw(path, options = {}) {
+  // 不抛异常的 API 调用
+  return fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  }).then(res => res.json()).catch(() => null);
+}
+
+function formatDate(ts) {
+  return new Date(ts).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function formatDateInput(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toISOString().split('T')[0];
+}
+
+function getHealthClass(health) {
+  const map = { green: 'green', blue: '', amber: 'amber', red: 'red', unknown: '' };
+  return map[health] || '';
+}
+
+function getStatusClass(status) {
+  const map = { active: '', completed: 'completed', archived: 'archived' };
+  return map[status] || '';
+}
+
+function getStageName(stage) {
+  return stage || '未设置';
+}
+
+function getOwner(project) {
+  return project.owner || '未分配';
+}
+
+// ========== 初始化 ==========
+document.addEventListener('DOMContentLoaded', async () => {
+  setupDialogs();
+  setupTabs();
+  setupGanttControls();
+  setupPortfolioControls();
+  setupProjectDialog();
+  setupPortfolioDialog();
+  setupStageDialog();
+  
+  try {
+    await loadPortfolios();
+  } catch (e) {
+    console.error('初始化失败:', e);
+    alert('初始化失败，请检查服务是否启动');
+  }
+});
+
+// ========== 对话框设置 ==========
+function setupDialogs() {
+  document.querySelectorAll('.close-dialog').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('dialog')?.close();
+    });
+  });
+  
+  document.querySelectorAll('dialog').forEach(dialog => {
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog) dialog.close();
+    });
+  });
+}
+
+// ========== 标签页切换 ==========
+function setupTabs() {
+  document.querySelectorAll('.main-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.main-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.view + 'View')?.classList.add('active');
+      
+      if (tab.dataset.view === 'gantt') loadGantt();
+      else if (tab.dataset.view === 'data') loadProjects();
+      else if (tab.dataset.view === 'archive') loadArchive();
+    });
+  });
+}
+
+// ========== 甘特图控制 ==========
+function setupGanttControls() {
+  // 缩放切换
+  document.querySelectorAll('.scale').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.scale').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.ganttScale = btn.dataset.scale;
+      loadGantt();
+    });
+  });
+  
+  // 区间选择
+  document.getElementById('rangeStart')?.addEventListener('change', loadGantt);
+  document.getElementById('rangeEnd')?.addEventListener('change', loadGantt);
+  
+  // 重置区间
+  document.getElementById('resetRangeBtn')?.addEventListener('click', () => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 3, 0);
+    document.getElementById('rangeStart').value = start.toISOString().split('T')[0];
+    document.getElementById('rangeEnd').value = end.toISOString().split('T')[0];
+    loadGantt();
+  });
+}
+
+function setDefaultDateRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 3, 0);
+  document.getElementById('rangeStart').value = start.toISOString().split('T')[0];
+  document.getElementById('rangeEnd').value = end.toISOString().split('T')[0];
+  state.ganttRange = {
+    start: document.getElementById('rangeStart').value,
+    end: document.getElementById('rangeEnd').value,
+  };
+}
+
+// ========== 组合控制 ==========
+function setupPortfolioControls() {
+  // 组合切换
+  document.getElementById('portfolioSelect')?.addEventListener('change', async (e) => {
+    state.currentPortfolioId = e.target.value;
+    await loadCurrentPortfolio();
+  });
+  
+  // 新建组合
+  document.getElementById('newPortfolioBtn')?.addEventListener('click', () => {
+    document.getElementById('portfolioDialog').showModal();
+  });
+  
+  // Stage 管理
+  document.getElementById('stageManageBtn')?.addEventListener('click', () => {
+    loadStageDialog();
+    document.getElementById('stageDialog').showModal();
+  });
+}
+
+async function loadPortfolios() {
+  state.portfolios = await api('/portfolios');
+  const select = document.getElementById('portfolioSelect');
+  select.innerHTML = state.portfolios.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  
+  if (state.portfolios.length > 0) {
+    state.currentPortfolioId = state.portfolios[0].id;
+    await loadCurrentPortfolio();
+  }
+}
+
+async function loadCurrentPortfolio() {
+  if (!state.currentPortfolioId) return;
+  await Promise.all([loadStats(), loadStages()]);
+  loadGantt();
+}
+
+async function loadStats() {
+  if (!state.currentPortfolioId) return;
+  try {
+    const stats = await api(`/portfolios/${state.currentPortfolioId}/stats`);
+    document.getElementById('totalCount').textContent = stats.total || 0;
+    document.getElementById('inProgressCount').textContent = stats.active || 0;
+    document.getElementById('completeCount').textContent = stats.completed || 0;
+    document.getElementById('archivedCount').textContent = stats.archived || 0;
+  } catch (e) {
+    console.error('加载统计失败:', e);
+  }
+}
+
+// ========== 甘特图 ==========
+async function loadGantt() {
+  if (!state.currentPortfolioId) return;
+  
+  const start = document.getElementById('rangeStart').value || state.ganttRange.start;
+  const end = document.getElementById('rangeEnd').value || state.ganttRange.end;
+  
+  if (!start || !end) {
+    setDefaultDateRange();
+    return loadGantt();
+  }
+  
+  try {
+    const data = await api(`/portfolios/${state.currentPortfolioId}/gantt?start=${start}&end=${end}&scale=${state.ganttScale}`);
+    renderGantt(data);
+  } catch (e) {
+    console.error('加载甘特图失败:', e);
+  }
+}
+
+function renderGantt(data) {
+  const timeHeader = document.getElementById('timeHeader');
+  const ganttBody = document.getElementById('ganttBody');
+  
+  // 渲染时间轴头部
+  const colWidth = state.ganttScale === 'day' ? 56 : state.ganttScale === 'week' ? 70 : 80;
+  const colsCount = data.timeline.length;
+  
+  timeHeader.innerHTML = data.timeline.map(cell => {
+    let cls = 'time-cell';
+    if (cell.isWeekend) cls += ' weekend';
+    if (cell.isCurrent) cls += ' current';
+    return `<div class="${cls}" style="min-width:${colWidth}px">${cell.label}</div>`;
+  }).join('');
+  
+  timeHeader.style.gridTemplateColumns = `repeat(${colsCount}, ${colWidth}px)`;
+  
+  // 渲染甘特行
+  if (data.rows.length === 0) {
+    ganttBody.innerHTML = '<div class="empty">暂无项目数据</div>';
+    return;
+  }
+  
+  ganttBody.innerHTML = data.rows.map(row => {
+    const p = row.project;
+    const level = row.level;
+    const indent = level > 0 ? `<span class="tree">${'├ '.repeat(level)}</span>` : '';
+    
+    // 健康状态徽章
+    let healthBadge = '';
+    if (p.health && p.health !== 'unknown') {
+      const healthMap = { green: '🟢', blue: '🔵', amber: '🟡', red: '🔴' };
+      healthBadge = healthMap[p.health] || '';
+    }
+    
+    // 状态徽章
+    const statusClass = p.status === 'completed' ? 'badge completed' : p.is_archived ? 'badge archived' : '';
+    const statusLabel = p.is_archived ? '已归档' : p.status === 'completed' ? '已完成' : '执行中';
+    
+    // 渲染甘特条
+    const barsHtml = renderGanttBars(row.bars, colsCount, colWidth);
+    
+    return `
+      <div class="gantt-row ${level > 0 ? 'level-' + level : 'parent'}">
+        <div class="project-cell">
+          <div class="project-name">${indent}${p.title}</div>
+          ${p.expectation ? `<div class="expectation">${p.expectation.substring(0, 60)}${p.expectation.length > 60 ? '...' : ''}</div>` : ''}
+        </div>
+        <div class="status-cell">
+          <div class="badges">
+            <span class="badge">${getOwner(p)}</span>
+            ${healthBadge ? `<span class="badge ${getHealthClass(p.health)}">${healthBadge}</span>` : ''}
+            <span class="badge">${getStageName(p.stage)}</span>
+          </div>
+          <span class="badge ${statusClass}">${statusLabel}</span>
+        </div>
+        <div class="timeline" style="grid-template-columns: repeat(${colsCount}, ${colWidth}px); --column-width: ${colWidth}px;">
+          ${barsHtml}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderGanttBars(bars, colsCount, colWidth) {
+  const cells = Array(colsCount).fill('');
+  
+  bars.forEach(bar => {
+    if (bar.isTbd) {
+      // TBD 步骤显示在右侧说明
+      const tbdHtml = `<span class="tbd-note">TBD: ${bar.stepName}</span>`;
+      cells[cells.length - 1] = tbdHtml;
+    } else {
+      // 有日期的步骤
+      const width = (bar.colEnd - bar.colStart + 1) * colWidth - 8;
+      const left = bar.colStart * colWidth + 4;
+      cells[bar.colStart] = `
+        <div class="step-bar ${bar.status}" style="position:absolute;left:${left}px;width:${width}px;min-width:40px">
+          ${bar.stepName}
+        </div>
+      `;
+    }
+  });
+  
+  return cells.map((content, i) => `<div style="position:relative;min-width:${colWidth}px">${content}</div>`).join('');
+}
+
+// ========== 项目主数据 ==========
+async function loadProjects() {
+  if (!state.currentPortfolioId) return;
+  
+  try {
+    const [projects, stages] = await Promise.all([
+      api(`/portfolios/${state.currentPortfolioId}/projects`),
+      api(`/portfolios/${state.currentPortfolioId}/stages`),
+    ]);
+    
+    state.projects = projects;
+    state.stages = stages;
+    
+    await renderProjectTable();
+    renderStageSummary();
+  } catch (e) {
+    console.error('加载项目失败:', e);
+  }
+}
+
+async function renderProjectTable() {
+  const tbody = document.getElementById('dataBody');
+  
+  if (state.projects.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无项目，点击上方"新增项目"创建</td></tr>';
+    return;
+  }
+  
+  const rowsHtml = [];
+  for (const p of state.projects) {
+    const isTopLevel = !p.parent_id;
+    const canArchive = isTopLevel && p.status === 'completed';
+    
+    // 获取关联资料数量
+    let linksCount = 0;
+    let linksHtml = '-';
+    try {
+      const links = await api(`/projects/${p.id}/links`);
+      linksCount = links.length;
+      if (linksCount > 0) {
+        linksHtml = links.map(l => 
+          `<a href="${l.url}" target="_blank" rel="noopener noreferrer" title="${l.title}">📎${linksCount}</a>`
+        ).join(' ');
+      }
+    } catch (e) {}
+    
+    rowsHtml.push(`
+      <tr data-id="${p.id}">
+        <td>${p.title}</td>
+        <td>${getOwner(p)}</td>
+        <td>${p.expectation ? p.expectation.substring(0, 50) + (p.expectation.length > 50 ? '...' : '') : '-'}</td>
+        <td>${getStageName(p.stage)}</td>
+        <td>${p.health === 'unknown' ? '-' : (p.health || '-')}</td>
+        <td><span class="badge ${getStatusClass(p.status)}">${p.status === 'completed' ? '已完成' : p.is_archived ? '已归档' : '执行中'}</span></td>
+        <td>${linksHtml}</td>
+        <td>
+          <div class="action-stack">
+            <button class="edit-btn" onclick="editProject('${p.id}')">编辑</button>
+            ${p.status !== 'completed' ? `<button class="edit-btn" onclick="completeProject('${p.id}')">完成</button>` : ''}
+            ${canArchive ? `<button class="edit-btn" onclick="archiveProject('${p.id}')">归档</button>` : ''}
+            ${!p.parent_id && !p.is_archived ? `<button class="edit-btn danger" onclick="deleteProject('${p.id}')">删除</button>` : ''}
+          </div>
+        </td>
+      </tr>
+    `);
+  }
+  
+  tbody.innerHTML = rowsHtml.join('');
+}
+
+function renderStageSummary() {
+  const container = document.getElementById('stageSummary');
+  container.innerHTML = state.stages.map(s => `<span>${s.name}</span>`).join('');
+}
+
+// ========== 归档中心 ==========
+async function loadArchive() {
+  if (!state.currentPortfolioId) return;
+  
+  try {
+    const projects = await api(`/portfolios/${state.currentPortfolioId}/projects?includeArchived=true`);
+    const archived = projects.filter(p => p.is_archived === 1 || p.status === 'archived');
+    
+    const container = document.getElementById('archiveBody');
+    
+    if (archived.length === 0) {
+      container.innerHTML = '<div class="empty">暂无已归档项目</div>';
+      return;
+    }
+    
+    // 按顶级项目分组
+    const topLevelArchived = archived.filter(p => !p.parent_id);
+    
+    container.innerHTML = topLevelArchived.map(p => `
+      <div class="archive-card">
+        <h3>${p.title}</h3>
+        <p>归档时间：${p.archived_at ? formatDate(p.archived_at) : '-'}</p>
+        <ul>
+          ${archived.filter(a => a.parent_id === p.id || a.id === p.id).map(a => `<li>${a.title}</li>`).join('')}
+        </ul>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('加载归档失败:', e);
+  }
+}
+
+// ========== 项目对话框 ==========
+function setupProjectDialog() {
+  // 添加步骤按钮
+  document.getElementById('addStepBtn')?.addEventListener('click', () => {
+    addStepRow({ _isNew: true });
+  });
+  
+  // 添加关联资料按钮
+  document.getElementById('addLinkBtn')?.addEventListener('click', () => {
+    addLinkRow({ _isNew: true });
+  });
+  
+  // 项目表单提交
+  document.getElementById('projectForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await saveProject();
+  });
+}
+
+function addStepRow(data = {}) {
+  const container = document.getElementById('stepsForm');
+  const tempId = 'new-' + Date.now() + '-' + Math.random().toString(36).substring(7);
+  const stepId = data.id || tempId;
+  
+  const row = document.createElement('div');
+  row.className = 'step-row';
+  row.dataset.stepId = stepId;
+  row.dataset.isNew = data._isNew ? 'true' : 'false';
+  
+  row.innerHTML = `
+    <input type="text" class="step-name" value="${data.name || ''}" placeholder="步骤名称"/>
+    <input type="date" class="step-start" value="${data.start_date ? data.start_date.split('T')[0] : ''}"/>
+    <input type="date" class="step-end" value="${data.end_date ? data.end_date.split('T')[0] : ''}"/>
+    <select class="step-status">
+      <option value="planned" ${data.status === 'planned' || !data.status ? 'selected' : ''}>计划中</option>
+      <option value="done" ${data.status === 'done' ? 'selected' : ''}>已完成</option>
+      <option value="risk" ${data.status === 'risk' ? 'selected' : ''}>有风险</option>
+      <option value="blocked" ${data.status === 'blocked' ? 'selected' : ''}>已阻塞</option>
+    </select>
+    <button type="button" onclick="removeStepRow(this)">×</button>
+  `;
+  
+  container.appendChild(row);
+}
+
+function removeStepRow(btn) {
+  btn.closest('.step-row').remove();
+}
+
+function addLinkRow(data = {}) {
+  const container = document.getElementById('linksForm');
+  const tempId = 'new-' + Date.now() + '-' + Math.random().toString(36).substring(7);
+  const linkId = data.id || tempId;
+  
+  const row = document.createElement('div');
+  row.className = 'link-row';
+  row.dataset.linkId = linkId;
+  row.dataset.isNew = data._isNew ? 'true' : 'false';
+  
+  row.innerHTML = `
+    <input type="text" class="link-title" value="${data.title || ''}" placeholder="资料标题"/>
+    <input type="url" class="link-url" value="${data.url || ''}" placeholder="https://..."/>
+    <button type="button" onclick="removeLinkRow(this)">×</button>
+  `;
+  
+  container.appendChild(row);
+}
+
+function removeLinkRow(btn) {
+  btn.closest('.link-row').remove();
+}
+
+async function editProject(id) {
+  const project = state.projects.find(p => p.id === id);
+  if (!project) return;
+  
+  document.getElementById('projectDialogTitle').textContent = '编辑项目';
+  document.getElementById('projectId').value = id;
+  document.getElementById('title').value = project.title;
+  document.getElementById('owner').value = project.owner || '';
+  document.getElementById('expectation').value = project.expectation || '';
+  document.getElementById('risk').value = project.risk || '';
+  
+  // 加载父项目选项
+  const parentSelect = document.getElementById('parentId');
+  parentSelect.innerHTML = '<option value="">无（顶级项目）</option>' +
+    state.projects.filter(p => p.id !== id).map(p => 
+      `<option value="${p.id}" ${p.id === project.parent_id ? 'selected' : ''}>${p.title}</option>`
+    ).join('');
+  
+  // 加载 Stage 选项
+  const stageSelect = document.getElementById('stage');
+  stageSelect.innerHTML = '<option value="">未设置</option>' +
+    state.stages.map(s => 
+      `<option value="${s.name}" ${s.name === project.stage ? 'selected' : ''}>${s.name}</option>`
+    ).join('');
+  
+  // 加载 Health
+  document.getElementById('health').value = project.health || 'unknown';
+  
+  // 清空并重新加载步骤
+  document.getElementById('stepsForm').innerHTML = '';
+  try {
+    const steps = await api(`/projects/${id}/steps`);
+    steps.forEach(s => addStepRow(s));
+  } catch (e) {
+    console.error('加载步骤失败:', e);
+  }
+  
+  // 清空并重新加载关联资料
+  document.getElementById('linksForm').innerHTML = '';
+  try {
+    const links = await api(`/projects/${id}/links`);
+    links.forEach(l => addLinkRow(l));
+  } catch (e) {
+    console.error('加载关联资料失败:', e);
+  }
+  
+  document.getElementById('projectDialog').showModal();
+}
+
+async function saveProject() {
+  const id = document.getElementById('projectId').value;
+  const isNew = !id;
+  
+  const data = {
+    title: document.getElementById('title').value,
+    owner: document.getElementById('owner').value,
+    stage: document.getElementById('stage').value || undefined,
+    health: document.getElementById('health').value,
+    expectation: document.getElementById('expectation').value || undefined,
+    risk: document.getElementById('risk').value || undefined,
+    parent_id: document.getElementById('parentId').value || undefined,
+  };
+  
+  try {
+    let projectId = id;
+    
+    if (isNew) {
+      const result = await api(`/portfolios/${state.currentPortfolioId}/projects`, {
+        method: 'POST',
+        body: { ...data, actor: 'web-ui' },
+      });
+      projectId = result.id;
+    } else {
+      await api(`/projects/${id}`, {
+        method: 'PUT',
+        body: { ...data, actor: 'web-ui' },
+      });
+      projectId = id;
+    }
+    
+    // 获取当前已有的步骤（用于对比）
+    const existingSteps = isNew ? [] : await api(`/projects/${projectId}/steps`);
+    const existingStepIds = new Set(existingSteps.map(s => s.id));
+    
+    // 获取当前已有的关联资料（用于对比）
+    const existingLinks = isNew ? [] : await api(`/projects/${projectId}/links`);
+    const existingLinkIds = new Set(existingLinks.map(l => l.id));
+    
+    // 处理步骤
+    const stepRows = document.querySelectorAll('#stepsForm .step-row');
+    const processedStepIds = new Set();
+    
+    for (const row of stepRows) {
+      const stepId = row.dataset.stepId;
+      const isNewStep = row.dataset.isNew === 'true';
+      const name = row.querySelector('.step-name').value.trim();
+      if (!name) continue;
+      
+      const startDate = row.querySelector('.step-start').value;
+      const endDate = row.querySelector('.step-end').value;
+      const status = row.querySelector('.step-status').value;
+      
+      processedStepIds.add(stepId);
+      
+      if (isNewStep || !existingStepIds.has(stepId)) {
+        // 新步骤：POST
+        await api(`/projects/${projectId}/steps`, {
+          method: 'POST',
+          body: { name, start_date: startDate || undefined, end_date: endDate || undefined, status, actor: 'web-ui' },
+        });
+      } else {
+        // 已有步骤：检查是否变更，变更则 PUT
+        const existing = existingSteps.find(s => s.id === stepId);
+        if (existing && (
+          existing.name !== name ||
+          existing.start_date !== startDate ||
+          existing.end_date !== endDate ||
+          existing.status !== status
+        )) {
+          await api(`/steps/${stepId}`, {
+            method: 'PUT',
+            body: { name, start_date: startDate || undefined, end_date: endDate || undefined, status, actor: 'web-ui' },
+          });
+        }
+      }
+    }
+    
+    // 删除未在表单中出现的步骤
+    for (const step of existingSteps) {
+      if (!processedStepIds.has(step.id)) {
+        await api(`/steps/${step.id}`, { method: 'DELETE', body: { actor: 'web-ui' } });
+      }
+    }
+    
+    // 处理关联资料
+    const linkRows = document.querySelectorAll('#linksForm .link-row');
+    const processedLinkIds = new Set();
+    
+    for (const row of linkRows) {
+      const linkId = row.dataset.linkId;
+      const isNewLink = row.dataset.isNew === 'true';
+      const title = row.querySelector('.link-title').value.trim();
+      const url = row.querySelector('.link-url').value.trim();
+      if (!title || !url) continue;
+      
+      // URL 验证
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        alert(`关联资料 URL 必须以 http:// 或 https:// 开头: ${title}`);
+        continue;
+      }
+      
+      processedLinkIds.add(linkId);
+      
+      if (isNewLink || !existingLinkIds.has(linkId)) {
+        // 新资料：POST
+        await api(`/projects/${projectId}/links`, {
+          method: 'POST',
+          body: { title, url, actor: 'web-ui' },
+        });
+      } else {
+        // 已有资料：检查是否变更
+        const existing = existingLinks.find(l => l.id === linkId);
+        if (existing && (existing.title !== title || existing.url !== url)) {
+          await api(`/links/${linkId}`, {
+            method: 'PUT',
+            body: { title, url, actor: 'web-ui' },
+          });
+        }
+      }
+    }
+    
+    // 删除未在表单中出现的关联资料
+    for (const link of existingLinks) {
+      if (!processedLinkIds.has(link.id)) {
+        await api(`/links/${link.id}`, { method: 'DELETE', body: { actor: 'web-ui' } });
+      }
+    }
+    
+    document.getElementById('projectDialog').close();
+    await loadProjects();
+    loadGantt();
+    loadStats();
+    
+  } catch (e) {
+    console.error('保存失败:', e);
+    alert('保存失败: ' + e.message);
+  }
+}
+
+// ========== 组合对话框 ==========
+function setupPortfolioDialog() {
+  document.getElementById('portfolioForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const data = {
+      name: document.getElementById('portfolioName').value,
+      description: document.getElementById('portfolioDescription').value,
+    };
+    
+    try {
+      await api('/portfolios', { method: 'POST', body: { ...data, actor: 'web-ui' } });
+      document.getElementById('portfolioDialog').close();
+      await loadPortfolios();
+    } catch (e) {
+      alert('创建失败: ' + e.message);
+    }
+  });
+}
+
+// ========== Stage 对话框 ==========
+function setupStageDialog() {
+  document.getElementById('stageForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const name = document.getElementById('newStageName').value;
+    if (!name) return;
+    
+    try {
+      await api(`/portfolios/${state.currentPortfolioId}/stages`, {
+        method: 'POST',
+        body: { name, actor: 'web-ui' },
+      });
+      document.getElementById('newStageName').value = '';
+      await loadStageDialog();
+    } catch (e) {
+      alert('创建失败: ' + e.message);
+    }
+  });
+}
+
+async function loadStageDialog() {
+  try {
+    state.stages = await api(`/portfolios/${state.currentPortfolioId}/stages`);
+    renderStageList();
+  } catch (e) {
+    console.error('加载 Stage 失败:', e);
+  }
+}
+
+function renderStageList() {
+  const container = document.getElementById('stageList');
+  
+  if (state.stages.length === 0) {
+    container.innerHTML = '<p class="empty">暂无 Stage，点击上方添加</p>';
+    return;
+  }
+  
+  container.innerHTML = state.stages.map(s => {
+    const inUse = state.projects.some(p => p.stage === s.name);
+    return `
+      <div>
+        <span>${s.name}${inUse ? ' <small>(已被使用)</small>' : ''}</span>
+        <button onclick="deleteStage('${s.id}', ${inUse})" ${inUse ? 'disabled title="已被项目使用"' : ''}>删除</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function deleteStage(id, inUse) {
+  if (inUse) {
+    alert('此 Stage 已被项目使用，无法删除');
+    return;
+  }
+  
+  if (!confirm('确定删除此 Stage？')) return;
+  
+  try {
+    const result = await api(`/stages/${id}`, { method: 'DELETE', body: { actor: 'web-ui' } });
+    if (!result.success) {
+      alert(result.message);
+    }
+    await loadStageDialog();
+    await loadStages();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+// ========== 项目操作 ==========
+async function completeProject(id) {
+  if (!confirm('确定将此项目标记为完成？')) return;
+  
+  try {
+    await api(`/projects/${id}/complete`, { method: 'POST', body: { actor: 'web-ui' } });
+    await loadProjects();
+    loadGantt();
+    loadStats();
+  } catch (e) {
+    alert('操作失败: ' + e.message);
+  }
+}
+
+async function archiveProject(id) {
+  if (!confirm('确定归档此项目及其所有后代？')) return;
+  
+  try {
+    const result = await api(`/projects/${id}/archive`, { method: 'POST', body: { actor: 'web-ui' } });
+    if (!result.success) {
+      alert('归档失败: ' + result.message);
+    }
+    await loadProjects();
+    loadGantt();
+    loadStats();
+  } catch (e) {
+    alert('归档失败: ' + e.message);
+  }
+}
+
+async function deleteProject(id) {
+  if (!confirm('确定删除此项目？子项目也会被删除。')) return;
+  
+  try {
+    await api(`/projects/${id}`, { method: 'DELETE', body: { actor: 'web-ui' } });
+    await loadProjects();
+    loadGantt();
+    loadStats();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+async function loadStages() {
+  if (!state.currentPortfolioId) return;
+  try {
+    state.stages = await api(`/portfolios/${state.currentPortfolioId}/stages`);
+  } catch (e) {
+    console.error('加载 Stage 失败:', e);
+  }
+}
+
+// ========== 全局函数 ==========
+window.editProject = editProject;
+window.completeProject = completeProject;
+window.archiveProject = archiveProject;
+window.deleteProject = deleteProject;
+window.deleteStage = deleteStage;
+window.removeStepRow = removeStepRow;
+window.removeLinkRow = removeLinkRow;
+
+// 新增项目按钮
+document.getElementById('addBtn')?.addEventListener('click', () => {
+  document.getElementById('projectDialogTitle').textContent = '新增项目';
+  document.getElementById('projectForm').reset();
+  document.getElementById('projectId').value = '';
+  document.getElementById('stepsForm').innerHTML = '';
+  document.getElementById('linksForm').innerHTML = '';
+  
+  // 加载父项目选项
+  const parentSelect = document.getElementById('parentId');
+  parentSelect.innerHTML = '<option value="">无（顶级项目）</option>' +
+    state.projects.map(p => `<option value="${p.id}">${p.title}</option>`).join('');
+  
+  // 加载 Stage 选项
+  const stageSelect = document.getElementById('stage');
+  stageSelect.innerHTML = '<option value="">未设置</option>' +
+    state.stages.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+  
+  document.getElementById('projectDialog').showModal();
+});
