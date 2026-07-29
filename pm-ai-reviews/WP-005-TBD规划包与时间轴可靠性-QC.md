@@ -34,3 +34,10 @@
 ## 发布边界
 
 本 QC 仅确认代码满足 L1。下一步由 Codex 负责 Git 提交、Cloudflare 生产发布与线上复验；Human Owner 对生产界面进行最终业务验收前，不得标记为 Human Accepted 或 Product Done。
+
+## 生产发布复验
+
+- Git：提交 `d5b2cbd feat: add unscheduled TBD packages and reliable gantt timeline` 已推送至 `Shak-Zhu/portfolio-governance-app` 的 `main`。
+- Cloudflare：Worker `pmo-governance` 已发布，Version ID：`c51fcb39-d28e-4e5e-80fe-de59e93aa897`。
+- 公网复验：`https://pmo.pmoforms.com/`、`/index.html`、`/app.js`、`/styles.css`、`/api/health` 全部返回 HTTP 200；线上 HTML 的 title/H1 均为“Shak 项目组合治理系统”。
+- 本工作包状态：**已生产发布，待 Human Owner 最终业务验收**。
