@@ -40,7 +40,7 @@ mcpUrl: https://pmo.pmoforms.com/mcp
 |---|---|---|
 | 组合 | list_portfolios / get_portfolio / create_portfolio / update_portfolio / delete_portfolio | 写操作产生审计事件（actor=mcp:shak-pmo-owner） |
 | 项目与层级 | list_projects / get_project / create_project / update_project / delete_project / complete_project / archive_project / get_project_stats | parent_id 建立层级；delete 受子项目保护；archive 受后代完成规则 |
-| 步骤与 TBD | list_steps / list_portfolio_steps / create_step / update_step / delete_step | 日期/status 决定是否进入时间轴或未排期区 |
+| 步骤、TBD 与依赖 | list_steps / list_portfolio_steps / create_step / update_step / delete_step | 日期/status 决定是否进入时间轴或未排期区；依赖字段说明前置与阻塞影响 |
 | Stage | list_stages / create_stage / update_stage / delete_stage | 被引用 Stage 禁改名、禁删除 |
 | 关联资料 | list_project_links / create_project_link / update_project_link / delete_project_link | url 仅 http(s) |
 | 甘特 | get_gantt | 返回 timeline / rows.bars / unscheduled |
@@ -72,13 +72,17 @@ mcpUrl: https://pmo.pmoforms.com/mcp
 ## 5. 步骤 Step 与 TBD ↔ Plan
 
 - `list_steps({ projectId })` / `list_portfolio_steps({ portfolioId })`。
-- `create_step({ projectId, name, start_date?, end_date?, status? })`
+- `create_step({ projectId, name, start_date?, end_date?, status?, dependency_type?, dependency_detail?, blocked_impact? })`
   - `status` ∈ `done/planned/risk/blocked/tbd`。
   - **无合法起止日期或 status=tbd → 进入"未排期工作包"区，不落时间轴**。
-- `update_step({ stepId, name?, start_date?, end_date?, status?, sort_order? })`
+- `update_step({ stepId, name?, start_date?, end_date?, status?, sort_order?, dependency_type?, dependency_detail?, blocked_impact? })`
   - **TBD → Plan**：补齐合法 `start_date`+`end_date` 且原为 tbd（未显式指定 status）→ 自动转 `planned`，落入日期格彩色甘特条。
   - **Plan → TBD**：清空任一日期（传空串 `""`）→ 自动回退 `tbd`，返回未排期区。
-  - 日期格式 `YYYY-MM-DD`；非法格式被拒。
+- 日期格式 `YYYY-MM-DD`；非法格式被拒。
+- **依赖治理字段**：
+  - `dependency_type` ∈ `none` / `finish_to_start`（完成后开始）/ `input_required`（关键输入）/ `business_gate`（业务确认 Gate）/ `external_dependency`（外部依赖）。
+  - 非 `none` 时必须同时填写 `dependency_detail`，准确写出前置项目、字段、确认或外部输入；如会造成阻塞，填写 `blocked_impact` 说明被阻塞的步骤、决策或交付。
+  - 设置 `dependency_type=none` 会清除两项说明。**红色 `blocked` 只代表当前状态，不能替代依赖字段。**
 - `delete_step({ stepId })`。
 
 ## 6. Stage（删除/改名保护）
@@ -116,6 +120,7 @@ mcpUrl: https://pmo.pmoforms.com/mcp
 ## 11. 典型工作流
 
 1. **加步骤并排期**：`list_projects` 找 projectId → `create_step`（先 tbd）→ 用户给日期后 `update_step` 补日期（自动转 planned）→ `get_gantt` 确认落位。
+2. **记录阻塞关系**：先 `list_steps` 确认步骤 ID → `update_step({ stepId, status: 'blocked', dependency_type: 'business_gate', dependency_detail: '待业务确认的字段范围', blocked_impact: '阻塞 Monitoring 规则配置与试点' })` → `get_gantt` 复核条下方的依赖说明。
 2. **整体归档**：`get_project_stats` / `list_projects` 确认后代均 completed → `archive_project`。若被拒，先 `complete_project` 各后代。
 3. **改 Stage 名**：`list_stages` → 若被引用则不可改，需先迁移项目 stage 值。
 

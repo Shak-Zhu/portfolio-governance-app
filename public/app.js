@@ -506,18 +506,37 @@ function renderGantt(data) {
 
 // 甘特条使用 CSS Grid 的 grid-column 落位，天然对齐时间轴单元格边界，
 // 不再用绝对定位 left/width（避免相对每个格重复偏移导致越界）。
+const dependencyTypeLabels = {
+  finish_to_start: '完成后开始',
+  input_required: '关键输入',
+  business_gate: '业务确认 Gate',
+  external_dependency: '外部依赖',
+};
+
 function renderGanttBars(bars, colsCount) {
   if (!bars || bars.length === 0) return '';
-  return bars.map((bar, i) => {
+  let nextRow = 1;
+  return bars.map((bar) => {
     const colStart = bar.colStart + 1; // grid-column 从 1 开始
     const colEnd = bar.colEnd + 2;     // 结束列 +1（闭区间）再 +1（grid 线）
+    const dependencyDetail = (bar.dependencyDetail || '').trim();
+    const blockedImpact = (bar.blockedImpact || '').trim();
+    const showDependency = bar.status === 'blocked' && bar.dependencyType && bar.dependencyType !== 'none' && dependencyDetail;
+    const row = nextRow++;
+    const dependencyRow = showDependency ? nextRow++ : null;
+    const callout = showDependency ? `
+      <div class="dependency-callout blocked"
+           style="grid-column: ${colStart} / -1; grid-row: ${dependencyRow};"
+           title="前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：${escapeHtml(dependencyDetail)}${blockedImpact ? `；阻塞：${escapeHtml(blockedImpact)}` : ''}">
+        <strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}
+      </div>` : '';
     return `
       <div class="step-bar ${escapeHtml(bar.status)}"
-           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${i + 1};"
+           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${row};"
            title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）">
         <span class="step-bar-label">${escapeHtml(bar.stepName)}</span>
       </div>
-    `;
+      ${callout}`;
   }).join('');
 }
 
@@ -747,7 +766,7 @@ function addStepRow(data = {}) {
   row.dataset.isNew = data._isNew ? 'true' : 'false';
   
   row.innerHTML = `
-    <input type="text" class="step-name" value="${data.name || ''}" placeholder="步骤名称"/>
+    <input type="text" class="step-name" value="${escapeHtml(data.name || '')}" placeholder="步骤名称"/>
     <input type="date" class="step-start" value="${data.start_date ? data.start_date.split('T')[0] : ''}"/>
     <input type="date" class="step-end" value="${data.end_date ? data.end_date.split('T')[0] : ''}"/>
     <select class="step-status">
@@ -755,7 +774,17 @@ function addStepRow(data = {}) {
       <option value="done" ${data.status === 'done' ? 'selected' : ''}>已完成</option>
       <option value="risk" ${data.status === 'risk' ? 'selected' : ''}>有风险</option>
       <option value="blocked" ${data.status === 'blocked' ? 'selected' : ''}>已阻塞</option>
+      <option value="tbd" ${data.status === 'tbd' ? 'selected' : ''}>TBD 未排期</option>
     </select>
+    <select class="step-dependency-type" aria-label="依赖关系类型">
+      <option value="none" ${!data.dependency_type || data.dependency_type === 'none' ? 'selected' : ''}>无依赖</option>
+      <option value="finish_to_start" ${data.dependency_type === 'finish_to_start' ? 'selected' : ''}>完成后开始</option>
+      <option value="input_required" ${data.dependency_type === 'input_required' ? 'selected' : ''}>关键输入</option>
+      <option value="business_gate" ${data.dependency_type === 'business_gate' ? 'selected' : ''}>业务确认 Gate</option>
+      <option value="external_dependency" ${data.dependency_type === 'external_dependency' ? 'selected' : ''}>外部依赖</option>
+    </select>
+    <input type="text" class="step-dependency-detail" value="${escapeHtml(data.dependency_detail || '')}" placeholder="前置依赖 / 关键输入"/>
+    <input type="text" class="step-blocked-impact" value="${escapeHtml(data.blocked_impact || '')}" placeholder="阻塞影响（谁 / 什么决策）"/>
     <button type="button" onclick="removeStepRow(this)">×</button>
   `;
   
@@ -890,6 +919,24 @@ async function saveProject() {
       const startDate = row.querySelector('.step-start').value;
       const endDate = row.querySelector('.step-end').value;
       const status = row.querySelector('.step-status').value;
+      const dependencyType = row.querySelector('.step-dependency-type').value;
+      const dependencyDetail = row.querySelector('.step-dependency-detail').value.trim();
+      const blockedImpact = row.querySelector('.step-blocked-impact').value.trim();
+
+      if (dependencyType !== 'none' && !dependencyDetail) {
+        throw new Error(`步骤「${name}」设置了依赖关系，必须填写前置依赖 / 关键输入`);
+      }
+
+      const stepPayload = {
+        name,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
+        status,
+        dependency_type: dependencyType,
+        dependency_detail: dependencyDetail || undefined,
+        blocked_impact: blockedImpact || undefined,
+        actor: 'web-ui',
+      };
       
       processedStepIds.add(stepId);
       
@@ -897,7 +944,7 @@ async function saveProject() {
         // 新步骤：POST
         await api(`/projects/${projectId}/steps`, {
           method: 'POST',
-          body: { name, start_date: startDate || undefined, end_date: endDate || undefined, status, actor: 'web-ui' },
+          body: stepPayload,
         });
       } else {
         // 已有步骤：检查是否变更，变更则 PUT
@@ -906,11 +953,14 @@ async function saveProject() {
           existing.name !== name ||
           existing.start_date !== startDate ||
           existing.end_date !== endDate ||
-          existing.status !== status
+          existing.status !== status ||
+          (existing.dependency_type || 'none') !== dependencyType ||
+          (existing.dependency_detail || '') !== dependencyDetail ||
+          (existing.blocked_impact || '') !== blockedImpact
         )) {
           await api(`/steps/${stepId}`, {
             method: 'PUT',
-            body: { name, start_date: startDate || undefined, end_date: endDate || undefined, status, actor: 'web-ui' },
+            body: stepPayload,
           });
         }
       }

@@ -1,7 +1,31 @@
 // 步骤（Step）API handlers
 import { D1Database } from '@cloudflare/workers-types';
 import { generateId, now, createAuditEvent, isValidDate } from '../lib/db';
-import type { Step, CreateStepRequest, UpdateStepRequest } from '../types';
+import type { Step, StepDependencyType, CreateStepRequest, UpdateStepRequest } from '../types';
+
+const DEPENDENCY_TYPES: StepDependencyType[] = [
+  'none', 'finish_to_start', 'input_required', 'business_gate', 'external_dependency',
+];
+
+function normalizeDependency(
+  dependencyType: StepDependencyType | undefined,
+  dependencyDetail: string | undefined,
+  blockedImpact: string | undefined
+): { dependencyType: StepDependencyType; dependencyDetail: string | null; blockedImpact: string | null } {
+  const normalizedType = dependencyType || 'none';
+  if (!DEPENDENCY_TYPES.includes(normalizedType)) {
+    throw new Error('依赖关系类型无效');
+  }
+  if (normalizedType === 'none') {
+    return { dependencyType: 'none', dependencyDetail: null, blockedImpact: null };
+  }
+  const detail = dependencyDetail?.trim() || null;
+  const impact = blockedImpact?.trim() || null;
+  if (!detail) {
+    throw new Error('设置依赖关系时必须填写前置依赖/关键输入');
+  }
+  return { dependencyType: normalizedType, dependencyDetail: detail, blockedImpact: impact };
+}
 
 // 获取项目的所有步骤
 export async function listSteps(db: D1Database, projectId: string): Promise<Step[]> {
@@ -74,11 +98,12 @@ export async function createStep(
   
   const sortOrder = (maxOrder?.max_order ?? -1) + 1;
   const status = data.status || (!data.start_date || !data.end_date ? 'tbd' : 'planned');
+  const dependency = normalizeDependency(data.dependency_type, data.dependency_detail, data.blocked_impact);
   
   await db
     .prepare(`
-      INSERT INTO steps (id, project_id, name, start_date, end_date, status, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO steps (id, project_id, name, start_date, end_date, status, dependency_type, dependency_detail, blocked_impact, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .bind(
       id,
@@ -87,6 +112,9 @@ export async function createStep(
       data.start_date || null,
       data.end_date || null,
       status,
+      dependency.dependencyType,
+      dependency.dependencyDetail,
+      dependency.blockedImpact,
       sortOrder,
       timestamp,
       timestamp
@@ -111,6 +139,9 @@ export async function createStep(
     start_date: data.start_date,
     end_date: data.end_date,
     status: status as Step['status'],
+    dependency_type: dependency.dependencyType,
+    dependency_detail: dependency.dependencyDetail || undefined,
+    blocked_impact: dependency.blockedImpact || undefined,
     sort_order: sortOrder,
     created_at: timestamp,
     updated_at: timestamp,
@@ -157,6 +188,17 @@ export async function updateStep(
   if (data.sort_order !== undefined) {
     updates.push('sort_order = ?');
     values.push(data.sort_order);
+  }
+
+  const touchesDependency = data.dependency_type !== undefined || data.dependency_detail !== undefined || data.blocked_impact !== undefined;
+  if (touchesDependency) {
+    const dependency = normalizeDependency(
+      data.dependency_type !== undefined ? data.dependency_type : existing.dependency_type,
+      data.dependency_detail !== undefined ? data.dependency_detail : existing.dependency_detail,
+      data.blocked_impact !== undefined ? data.blocked_impact : existing.blocked_impact
+    );
+    updates.push('dependency_type = ?', 'dependency_detail = ?', 'blocked_impact = ?');
+    values.push(dependency.dependencyType, dependency.dependencyDetail, dependency.blockedImpact);
   }
   
   if (updates.length === 0) return existing;

@@ -1228,6 +1228,41 @@ await t('I1. create_step 缺日期 → 视为未排期（TBD）', async () => {
   if (text.status !== 'tbd') throw new Error('expected status=tbd, got: ' + text.status);
 });
 
+await t('I2. MCP 步骤依赖字段：严格校验、创建、更新与甘特回读', async () => {
+  const port = await mcp('tools/call', { name: 'create_portfolio', arguments: { name: 'dependency-test-' + Date.now() } }, 71, { Authorization: `Bearer ${TOKEN}` });
+  const portId = (safeJson(port.parsedBody) || safeJson(port.text))?.result?.structuredContent?.id;
+  if (!portId) throw new Error('no dependency test portfolio id');
+  const project = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: portId, title: 'Dependency test', owner: 'PM' } }, 72, { Authorization: `Bearer ${TOKEN}` });
+  const projectId = (safeJson(project.parsedBody) || safeJson(project.text))?.result?.structuredContent?.id;
+  if (!projectId) throw new Error('no dependency test project id');
+
+  const invalid = await mcp('tools/call', { name: 'create_step', arguments: {
+    projectId, name: '缺前置', start_date: '2026-08-03', end_date: '2026-08-04', status: 'blocked', dependency_type: 'business_gate',
+  } }, 73, { Authorization: `Bearer ${TOKEN}` });
+  const invalidBody = safeJson(invalid.parsedBody) || safeJson(invalid.text);
+  const invalidText = invalidBody?.result?.content?.[0]?.text || '';
+  if (!invalidText.includes('必须填写前置')) throw new Error('non-none dependency without detail was not rejected');
+
+  const created = await mcp('tools/call', { name: 'create_step', arguments: {
+    projectId, name: '字段确认 Gate', start_date: '2026-08-03', end_date: '2026-08-04', status: 'blocked',
+    dependency_type: 'business_gate', dependency_detail: '业务字段范围确认', blocked_impact: '阻塞 Monitoring 配置',
+  } }, 74, { Authorization: `Bearer ${TOKEN}` });
+  const createdBody = safeJson(created.parsedBody) || safeJson(created.text);
+  const step = createdBody?.result?.structuredContent;
+  if (!step?.id || step.dependency_type !== 'business_gate' || step.blocked_impact !== '阻塞 Monitoring 配置') throw new Error('dependency fields not returned from create_step');
+
+  const gantt = await mcp('tools/call', { name: 'get_gantt', arguments: { portfolioId: portId, start: '2026-08-01', end: '2026-08-10', scale: 'day' } }, 75, { Authorization: `Bearer ${TOKEN}` });
+  const ganttBody = safeJson(gantt.parsedBody) || safeJson(gantt.text);
+  const ganttData = ganttBody?.result?.structuredContent;
+  const bar = ganttData?.rows?.[0]?.bars?.[0];
+  if (!bar || bar.dependencyType !== 'business_gate' || bar.dependencyDetail !== '业务字段范围确认' || bar.blockedImpact !== '阻塞 Monitoring 配置') throw new Error('get_gantt missing dependency fields');
+
+  const cleared = await mcp('tools/call', { name: 'update_step', arguments: { stepId: step.id, dependency_type: 'none' } }, 76, { Authorization: `Bearer ${TOKEN}` });
+  const clearedBody = safeJson(cleared.parsedBody) || safeJson(cleared.text);
+  const clearedStep = clearedBody?.result?.structuredContent;
+  if (clearedStep?.dependency_type !== 'none' || clearedStep?.dependency_detail || clearedStep?.blocked_impact) throw new Error('dependency_type none did not clear descriptions');
+});
+
 // ---- /mcp never accepts cookie / redirects ----
 await t('/mcp 不返回 302（即使带 Cookie）', async () => {
   const r = await mcp('initialize', {}, 99, { Authorization: `Bearer ${TOKEN}`, Cookie: 'shak_pmo_session=fake' });

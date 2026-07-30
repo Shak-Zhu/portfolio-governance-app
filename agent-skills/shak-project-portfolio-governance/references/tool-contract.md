@@ -67,8 +67,8 @@ version: 1.0.0
 |---|---|---|---|
 | `list_steps` | `projectId` | – | `{ steps: Step[] }` |
 | `list_portfolio_steps` | `portfolioId` | – | `{ steps: Step[] }` |
-| `create_step` | `projectId`, `name` | `start_date`, `end_date`, `status` | `{ step: Step }` |
-| `update_step` | `stepId`, (任一字段) | `name`, `start_date`, `end_date`, `status`, `sort_order` | `{ step: Step }` |
+| `create_step` | `projectId`, `name` | `start_date`, `end_date`, `status`, `dependency_type`, `dependency_detail`, `blocked_impact` | `{ step: Step }` |
+| `update_step` | `stepId`, (任一字段) | `name`, `start_date`, `end_date`, `status`, `sort_order`, `dependency_type`, `dependency_detail`, `blocked_impact` | `{ step: Step }` |
 | `delete_step` | `stepId` | – | `{ success: true }` |
 
 `status ∈ { done, planned, risk, blocked, tbd }`. 日期 `YYYY-MM-DD`.
@@ -77,6 +77,8 @@ version: 1.0.0
 - 无合法起止日期或 `status=tbd` → 进入"未排期工作包"区。
 - `update_step` 补齐合法 start/end 且原状态 tbd → 自动转 `planned` 落时间轴。
 - `update_step` 把任一日期传空串 `""` → 回退 `tbd`、回未排期区。
+- `dependency_type` ∈ `none | finish_to_start | input_required | business_gate | external_dependency`；非 `none` 必须有非空 `dependency_detail`。设置 `none` 会清除 `dependency_detail` 与 `blocked_impact`。
+- `blocked_impact` 是被阻塞的步骤、决策或交付说明；不可仅以 `status=blocked` 或颜色代替。
 
 ### Stage（4）
 

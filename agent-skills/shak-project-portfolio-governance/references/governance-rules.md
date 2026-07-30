@@ -64,6 +64,13 @@ version: 1.0.0
 | planned → done | `update_step` status=done ∧ 有合法日期 | 显式 | 时间轴 done 颜色 |
 | 任意 → tbd | `update_step` status=tbd | 显式 | 未排期工作包区 |
 
+## 5. 依赖与阻塞治理
+
+- 依赖必须用步骤字段表达，不允许用红色状态、项目名称或自由文本猜测替代。
+- 先选择 `dependency_type`：完成后开始（`finish_to_start`）、关键输入（`input_required`）、业务确认 Gate（`business_gate`）或外部依赖（`external_dependency`）。
+- 写 `dependency_detail` 时必须说明前置具体是什么；如状态为 `blocked`，必须写 `blocked_impact`，说明阻塞的下游步骤、决策或交付。
+- `get_gantt` 的步骤条位置仍只由开始/结束日期决定；依赖说明是条下方治理注释，绝不自动延长、移动或生成新的日期条。
+
 ### 日期合法性
 - 必须 `YYYY-MM-DD`，正则 `^\d{4}-\d{2}-\d{2}$`。
 - `start_date <= end_date`，否则业务拒绝。

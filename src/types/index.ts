@@ -28,6 +28,8 @@ export interface Project {
   steps?: Step[];
 }
 
+export type StepDependencyType = 'none' | 'finish_to_start' | 'input_required' | 'business_gate' | 'external_dependency';
+
 export interface Step {
   id: string;
   project_id: string;
@@ -35,6 +37,9 @@ export interface Step {
   start_date?: string;
   end_date?: string;
   status: 'done' | 'planned' | 'risk' | 'blocked' | 'tbd';
+  dependency_type: StepDependencyType;
+  dependency_detail?: string;
+  blocked_impact?: string;
   sort_order: number;
   created_at: number;
   updated_at: number;
@@ -107,6 +112,9 @@ export interface CreateStepRequest {
   start_date?: string;
   end_date?: string;
   status?: string;
+  dependency_type?: StepDependencyType;
+  dependency_detail?: string;
+  blocked_impact?: string;
 }
 
 export interface UpdateStepRequest {
@@ -115,6 +123,9 @@ export interface UpdateStepRequest {
   end_date?: string;
   status?: string;
   sort_order?: number;
+  dependency_type?: StepDependencyType;
+  dependency_detail?: string;
+  blocked_impact?: string;
 }
 
 export interface CreateStageRequest {

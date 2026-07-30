@@ -170,7 +170,7 @@ function findEndCell(cells, ms) {
  *
  * @param {Array} steps
  * @param {Array} cells generateTimeline 的返回值
- * @returns {Array<{stepId:string,stepName:string,status:string,startDate:string,endDate:string,colStart:number,colEnd:number}>}
+ * @returns {Array<{stepId:string,stepName:string,status:string,startDate:string,endDate:string,colStart:number,colEnd:number,dependencyType:string,dependencyDetail:string,blockedImpact:string}>}
  */
 export function calculateBars(steps, cells) {
   const bars = [];
@@ -202,6 +202,9 @@ export function calculateBars(steps, cells) {
       status: step.status,
       startDate: step.start_date,
       endDate: step.end_date,
+      dependencyType: step.dependency_type || 'none',
+      dependencyDetail: step.dependency_detail || '',
+      blockedImpact: step.blocked_impact || '',
       colStart,
       colEnd,
     });

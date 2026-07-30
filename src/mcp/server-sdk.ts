@@ -86,12 +86,16 @@ const GetProjectStatsSchema = z.object({ portfolioId: z.string().min(1) }).stric
 // Step schemas
 const ListStepsSchema = z.object({ projectId: z.string().min(1) }).strict();
 const ListPortfolioStepsSchema = z.object({ portfolioId: z.string().min(1) }).strict();
+const STEP_DEPENDENCY_TYPES = ['none', 'finish_to_start', 'input_required', 'business_gate', 'external_dependency'] as const;
 const CreateStepSchema = z.object({
   projectId: z.string().min(1),
   name: z.string().min(1),
   start_date: z.string().optional(),
   end_date: z.string().optional(),
   status: z.enum(STEP_STATUS).optional(),
+  dependency_type: z.enum(STEP_DEPENDENCY_TYPES).optional(),
+  dependency_detail: z.string().optional(),
+  blocked_impact: z.string().optional(),
 }).strict();
 const UpdateStepSchema = z.object({
   stepId: z.string().min(1),
@@ -100,6 +104,9 @@ const UpdateStepSchema = z.object({
   end_date: z.string().optional(),
   status: z.enum(STEP_STATUS).optional(),
   sort_order: z.number().optional(),
+  dependency_type: z.enum(STEP_DEPENDENCY_TYPES).optional(),
+  dependency_detail: z.string().optional(),
+  blocked_impact: z.string().optional(),
 }).strict();
 const DeleteStepSchema = z.object({ stepId: z.string().min(1) }).strict();
 
@@ -414,7 +421,7 @@ export function createMcpServerFactory(ctx: ServerContext) {
       'create_step',
       {
         title: 'Create Step',
-        description: '为项目创建步骤。参数 projectId、name 必填；start_date/end_date（YYYY-MM-DD）、status（done/planned/risk/blocked/tbd）可选。无合法日期或 status=tbd 时进入未排期工作包区，不落时间轴。',
+        description: '为项目创建步骤。参数 projectId、name 必填；start_date/end_date（YYYY-MM-DD）、status（done/planned/risk/blocked/tbd）可选。依赖可选：dependency_type（none/finish_to_start/input_required/business_gate/external_dependency）、dependency_detail（前置）和 blocked_impact（阻塞影响）；非 none 时必须填写 dependency_detail。无合法日期或 status=tbd 时进入未排期工作包区，不落时间轴。',
         inputSchema: CreateStepSchema,
       },
       async (args) => {
@@ -427,7 +434,7 @@ export function createMcpServerFactory(ctx: ServerContext) {
       'update_step',
       {
         title: 'Update Step',
-        description: '更新步骤。参数 stepId 必填；name、start_date、end_date、status、sort_order 可选。补齐合法起止日期且原为 tbd 时自动转 planned；清空任一日期自动回退 tbd（TBD ↔ Plan 语义与网页一致）。清空日期请传空字符串 ""。',
+        description: '更新步骤。参数 stepId 必填；name、start_date、end_date、status、sort_order 以及 dependency_type/dependency_detail/blocked_impact 可选。dependency_type 非 none 时必须填写前置 dependency_detail；none 会清除依赖说明。补齐合法起止日期且原为 tbd 时自动转 planned；清空任一日期自动回退 tbd（TBD ↔ Plan 语义与网页一致）。清空日期请传空字符串 ""。',
         inputSchema: UpdateStepSchema,
       },
       async (args) => {

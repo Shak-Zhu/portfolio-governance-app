@@ -32,7 +32,7 @@ alwaysApply: false
 |---|---|
 | 组合 | list_portfolios / get_portfolio / create_portfolio / update_portfolio / delete_portfolio |
 | 项目与层级 | list_projects / get_project / create_project / update_project / delete_project / complete_project / archive_project / get_project_stats |
-| 步骤与 TBD | list_steps / list_portfolio_steps / create_step / update_step / delete_step |
+| 步骤、TBD 与依赖 | list_steps / list_portfolio_steps / create_step / update_step / delete_step |
 | Stage | list_stages / create_stage / update_stage / delete_stage |
 | 关联资料 | list_project_links / create_project_link / update_project_link / delete_project_link |
 | 甘特 | get_gantt |
@@ -44,6 +44,7 @@ alwaysApply: false
 - **项目层级**：`parent_id` 建立父子；`delete_project` 存在未归档子项目时被拒绝。
 - **整体归档**：`archive_project` 仅顶级项目，且所有后代必须已完成，否则被拒。
 - **TBD ↔ Plan**：`create_step` 无合法起止日期或 `status=tbd` → 未排期区；`update_step` 补齐合法起止日期（原 tbd）→ 自动 `planned` 落时间轴；清空任一日期（传 `""`）→ 自动回 `tbd`。日期 `YYYY-MM-DD`。
+- **依赖字段**：`dependency_type` 可取 `none` / `finish_to_start` / `input_required` / `business_gate` / `external_dependency`；非 `none` 必须写 `dependency_detail`，并建议写 `blocked_impact`。红色 `blocked` 是状态，不能代替前置与影响描述。
 - **Stage 保护**：被任何项目（含已归档）引用的 Stage 禁止改名与删除。
 - **URL 校验**：关联资料 `url` 仅接受 `http(s)`。
 - **强 schema**：工具使用 Zod `.strict()`，未声明字段（如 `actor`、`scope`）会被运行时拒绝；请只传必要字段。

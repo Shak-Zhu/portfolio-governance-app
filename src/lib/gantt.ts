@@ -10,6 +10,9 @@ export interface GanttBar {
   status: string;
   startDate: string;
   endDate: string;
+  dependencyType: string;
+  dependencyDetail: string;
+  blockedImpact: string;
   colStart: number;
   colEnd: number;
 }

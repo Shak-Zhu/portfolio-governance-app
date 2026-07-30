@@ -144,6 +144,20 @@ check('TBD 步骤不进入条形计算', () => {
   eq(bars[0].stepId, 's1', '应为 s1');
 });
 
+check('甘特条保留依赖字段，且不改变真实日期落位', () => {
+  const cells = generateTimeline('2026-08-01', '2026-08-10', 'day', Date.UTC(2026, 7, 1));
+  const bars = calculateBars([{
+    id: 'dep-1', name: '受阻步骤', start_date: '2026-08-03', end_date: '2026-08-05', status: 'blocked',
+    dependency_type: 'business_gate', dependency_detail: '业务字段范围确认', blocked_impact: '阻塞监控配置',
+  }], cells);
+  eq(bars.length, 1, '有依赖的已排期步骤仍只产生一根真实日期条');
+  eq(cells[bars[0].colStart].date, '2026-08-03', '依赖说明不得移动开始日期');
+  eq(cells[bars[0].colEnd].date, '2026-08-05', '依赖说明不得延长结束日期');
+  eq(bars[0].dependencyType, 'business_gate', '保留依赖类型');
+  eq(bars[0].dependencyDetail, '业务字段范围确认', '保留前置说明');
+  eq(bars[0].blockedImpact, '阻塞监控配置', '保留阻塞影响');
+});
+
 // ===== 未排期分组 =====
 check('collectUnscheduled 按项目分组，仅含未排期步骤', () => {
   const projects = [

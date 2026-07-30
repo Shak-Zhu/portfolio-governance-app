@@ -10,27 +10,27 @@
   "serverVersion": "1.0.0",
   "manifestPath": "manifest.json",
   "skillSourceCommit": null,
-  "generatedAt": "2026-07-30T06:00:46.361Z",
+  "generatedAt": "2026-07-30T12:15:41.220Z",
   "files": {
     "SKILL.md": {
       "path": "SKILL.md",
-      "sha256": "a8040e4a863e86829a3b0753e7030e8a8ba91e93b9fe4b0c0d53fe9c2f601573",
-      "bytes": 8631
+      "sha256": "b6f8fad3259635a2c63f21c2e14c093d145bcb3ff06c50accda98d7d17acec11",
+      "bytes": 9660
     },
     "shak-project-portfolio-governance.mdc": {
       "path": "shak-project-portfolio-governance.mdc",
-      "sha256": "07dfde8b9718ad59996e825b5c1421fbe7a0aacc4b5bb2e09548f932ab0a9ec4",
-      "bytes": 3582
+      "sha256": "d764c1fdaba85a4b4cc89c8d4ee3482e0ab9cfd91d3594fa373517505190d206",
+      "bytes": 3869
     },
     "references/tool-contract.md": {
       "path": "references/tool-contract.md",
-      "sha256": "e3126e7b1731d2d70ff8036ea8da041a2c3c792ffed4b081eea9765ee5bcd4d7",
-      "bytes": 7166
+      "sha256": "4af064013eb77e465c6357c0c2ecb6a627bc2c43741e9c3c8189821bac1c5253",
+      "bytes": 7621
     },
     "references/governance-rules.md": {
       "path": "references/governance-rules.md",
-      "sha256": "8475c350c5ab618a95432ea7a61d2b32a0c97c795d000cb475d03ee6a8030c95",
-      "bytes": 7911
+      "sha256": "8ce32ae98495edf4d777c20ae4a33f313ed6b047035079f7b839d912b6f5e293",
+      "bytes": 8574
     },
     "agents/openai.yaml": {
       "path": "agents/openai.yaml",
