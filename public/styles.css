@@ -338,3 +338,133 @@ dialog form { padding: 23px; }
 
 .loading { opacity: 0.6; pointer-events: none; }
 .error-msg { color: var(--red); font-size: 12px; margin-top: 4px; }
+
+/* ========== Agent 接入中心 ========== */
+.agent-status {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-radius: 9px; font-size: 13px;
+  border: 1px solid var(--line); background: var(--panel); margin-bottom: 16px;
+}
+.agent-status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--grey); flex: none; }
+.agent-status[data-state="enabled"] { border-color: #b7e3cd; background: #f0faf5; }
+.agent-status[data-state="enabled"] .agent-status-dot { background: var(--green); }
+.agent-status[data-state="pending"] { border-color: #f3dca6; background: #fdf7ea; }
+.agent-status[data-state="pending"] .agent-status-dot { background: var(--amber); }
+.agent-status[data-state="error"] { border-color: #f0c2bf; background: #fcf0ef; }
+.agent-status[data-state="error"] .agent-status-dot { background: var(--red); }
+
+.agent-meta {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-bottom: 18px;
+}
+.agent-meta > div {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.agent-meta span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.agent-meta code { font-size: 12px; color: var(--ink); word-break: break-all; }
+
+.agent-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 22px;
+}
+.agent-card {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 18px 18px 20px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.agent-card header h3 { margin: 0 0 4px; font-size: 16px; }
+.agent-card header p { margin: 0; font-size: 12px; color: var(--muted); }
+.agent-card header code { font-size: 11px; background: var(--canvas); padding: 1px 5px; border-radius: 4px; }
+.agent-scopes { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-scopes span {
+  font-size: 11px; color: var(--navy); background: #eaf1fb; border: 1px solid #cfe0f7;
+  padding: 2px 8px; border-radius: 999px;
+}
+.agent-copy { margin-top: auto; }
+.agent-copy:disabled { opacity: 0.5; cursor: not-allowed; }
+.agent-copy-hint { margin: 0; font-size: 12px; color: var(--green); min-height: 16px; }
+.agent-cmd-fallback {
+  margin-top: 8px; padding: 10px; background: #0f1b2e; color: #e6edf6; border-radius: 8px;
+  font-size: 11px; white-space: pre-wrap; word-break: break-all; user-select: all; max-height: 260px; overflow: auto;
+}
+
+.agent-help {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 16px 20px;
+}
+.agent-help h4 { margin: 0 0 10px; font-size: 14px; }
+.agent-help ol { margin: 0; padding-left: 20px; }
+.agent-help li { font-size: 13px; color: var(--muted); margin-bottom: 6px; line-height: 1.6; }
+.agent-help code { font-size: 12px; background: var(--canvas); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+/* ============ 登录页 ============ */
+.login-body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #eef4fc 0%, #f4f7fb 100%);
+}
+.login-shell {
+  width: 100%;
+  max-width: 420px;
+  padding: 24px;
+}
+.login-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 32px 32px 28px;
+  box-shadow: 0 12px 32px rgba(20, 38, 66, 0.08);
+}
+.login-card .eyebrow { margin-bottom: 8px; }
+.login-card h1 { margin: 0 0 6px; font-size: 22px; }
+.login-sub { margin: 0 0 22px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.login-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ink); }
+.login-form input {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fafcff;
+}
+.login-form input:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+.login-form button.primary { padding: 12px; font-size: 14px; margin-top: 4px; }
+.login-form button.primary:disabled { opacity: 0.6; cursor: progress; }
+.login-error {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: #fcf0ef;
+  border: 1px solid #f0c2bf;
+  color: #a23a36;
+  font-size: 13px;
+}
+.login-foot { margin: 18px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+
+/* ============ 顶部会话盒子 ============ */
+.topbar-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.session-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: #f4f7fb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.session-box .session-sub { color: var(--ink); font-weight: 600; }
+.session-box button.secondary {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.session-box button.secondary:hover { background: #fcf0ef; border-color: #f0c2bf; color: #a23a36; }

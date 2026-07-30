@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>登录 · Shak 项目组合治理系统</title>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <section class="login-card">
+      <p class="eyebrow">SHAK PROJECT PORTFOLIO GOVERNANCE</p>
+      <h1>Shak 项目组合治理系统</h1>
+      <p class="login-sub">仅 Human Owner 可登录。请使用管理员下发的邮箱与密码。</p>
+
+      <form id="loginForm" class="login-form" autocomplete="on" novalidate>
+        <label>
+          <span>邮箱</span>
+          <input id="email" name="email" type="email" required autocomplete="username"/>
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="password" name="password" type="password" required autocomplete="current-password"/>
+        </label>
+        <p id="loginError" class="login-error" hidden></p>
+        <button id="loginSubmit" type="submit" class="primary">登录</button>
+      </form>
+
+      <p class="login-foot">登录后可在「Agent 接入」页一键复制带 Bearer Token 的安装指令。Token 仅在登录态展示，不进入静态资产、Git、Skill 或 manifest。</p>
+    </section>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>

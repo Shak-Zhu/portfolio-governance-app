@@ -14,11 +14,17 @@
         <h1>Shak 项目组合治理系统</h1>
         <p>项目主数据、步骤计划、组合甘特图与归档中心共用一套数据。</p>
       </div>
-      <div class="connection-state">
-        <span></span>
-        <div>
-          <strong>Cloudflare D1</strong>
-          <small>多项目治理 Web App</small>
+      <div class="topbar-right">
+        <div class="connection-state">
+          <span></span>
+          <div>
+            <strong>Cloudflare D1</strong>
+            <small>多项目治理 Web App</small>
+          </div>
+        </div>
+        <div id="sessionBox" class="session-box" hidden>
+          <span id="sessionSub" class="session-sub"></span>
+          <button id="logoutBtn" class="secondary" type="button">退出</button>
         </div>
       </div>
     </header>
@@ -46,6 +52,7 @@
       <button class="main-tab active" data-view="gantt">组合甘特图</button>
       <button class="main-tab" data-view="data">项目主数据</button>
       <button class="main-tab" data-view="archive">归档中心</button>
+      <button class="main-tab" data-view="agent">Agent 接入</button>
     </nav>
 
     <!-- 甘特图视图 -->
@@ -139,6 +146,71 @@
         </div>
       </div>
       <div id="archiveBody" class="archive-grid"></div>
+    </section>
+
+    <!-- Agent 接入中心视图 -->
+    <section id="agentView" class="view">
+      <div class="data-toolbar">
+        <div>
+          <h2>Agent 接入中心</h2>
+          <p>通过官方认证 MCP，让 Codex、Cursor 或通用 MCP 客户端准确维护本系统。所有写操作复用既有业务服务与审计。</p>
+        </div>
+      </div>
+
+      <div id="agentStatus" class="agent-status" data-state="loading">
+        <span class="agent-status-dot"></span>
+        <span id="agentStatusText">正在读取 MCP 接入状态…</span>
+      </div>
+
+      <div class="agent-meta">
+        <div><span>MCP 名称</span><code id="agentMcpName">shak-project-portfolio-governance</code></div>
+        <div><span>MCP URL</span><code id="agentMcpUrl">https://pmo.pmoforms.com/mcp</code></div>
+        <div><span>鉴权方式</span><code id="agentAuthMode">Authorization: Bearer &lt;token&gt;</code></div>
+        <div><span>Skill 版本</span><code id="agentSkillVersion">—</code></div>
+        <div><span>工具协议</span><code id="agentToolProto">—</code></div>
+      </div>
+
+      <div id="agentCards" class="agent-cards">
+        <!-- Codex -->
+        <article class="agent-card" data-client="codex">
+          <header>
+            <h3>Codex</h3>
+            <p>通过 <code>codex mcp add</code> 接入，并安装 SKILL.md。</p>
+          </header>
+          <button class="primary agent-copy" data-client="codex" disabled>一键复制安装指令</button>
+          <p class="agent-copy-hint" data-client="codex"></p>
+        </article>
+
+        <!-- Cursor -->
+        <article class="agent-card" data-client="cursor">
+          <header>
+            <h3>Cursor</h3>
+            <p>安全合并 <code>~/.cursor/mcp.json</code>，并安装 <code>.cursor/rules/*.mdc</code>。</p>
+          </header>
+          <button class="primary agent-copy" data-client="cursor" disabled>一键复制安装指令</button>
+          <p class="agent-copy-hint" data-client="cursor"></p>
+        </article>
+
+        <!-- 通用 MCP Client -->
+        <article class="agent-card" data-client="generic">
+          <header>
+            <h3>通用 MCP Client</h3>
+            <p>标准 Streamable HTTP + Bearer Header，适用于任何兼容 MCP Inspector 的客户端。</p>
+          </header>
+          <button class="primary agent-copy" data-client="generic" disabled>一键复制安装指令</button>
+          <p class="agent-copy-hint" data-client="generic"></p>
+        </article>
+      </div>
+
+      <div class="agent-help">
+        <h4>接入后如何验证</h4>
+        <ol>
+          <li>复制下方任一指令并执行；Codex 会自动写入 Bearer Header，Cursor 会写入 <code>~/.cursor/mcp.json</code> 的 <code>headers.Authorization</code>。</li>
+          <li>运行工具发现（<code>tools/list</code>），应能看到组合/项目/步骤/Stage/链接/甘特/审计等工具。</li>
+          <li>调用 <code>get_capabilities</code> 校验 <code>skillVersion</code> 与服务端 manifest 一致，确认 Skill 版本未漂移。</li>
+          <li>失败时先看返回：401=未授权需检查 Bearer；404/422=参数错误，按 schema 修正后重试。</li>
+        </ol>
+      </div>
     </section>
   </main>
 

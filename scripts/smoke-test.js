@@ -1,26 +1,67 @@
 #!/usr/bin/env node
 /**
- * Shak 项目组合治理系统 Smoke Test（WP-002A + WP-005）
+ * Shak 项目组合治理系统 Smoke Test（WP-002A + WP-005 + WP-006 网页登录）
  * 覆盖：组合/项目/步骤/关联资料/Stage/归档/审计，以及
- * WP-005 的 TBD 未排期分组、TBD→Plan→TBD 迁移、日/周/月长区间时间轴可靠性。
- * 运行方式: API_URL=http://127.0.0.1:8789/api node scripts/smoke-test.js
+ * WP-005 的 TBD 未排期分组、TBD→Plan→TBD 迁移、日/周/月长区间时间轴可靠性，
+ * WP-006 的网页登录会话（先登录取 Cookie，业务 API 复用 Cookie 跑回归）。
+ *
+ * 运行方式:
+ *   API_URL=http://127.0.0.1:8788/api \
+ *   LOGIN_EMAIL=<email> LOGIN_PASSWORD=<password> \
+ *   node scripts/smoke-test.js
+ * 缺一不可：未登录将被 401 拦截。
  */
 
 const API_BASE = process.env.API_URL || 'http://localhost:8787/api';
+const LOGIN_EMAIL = process.env.LOGIN_EMAIL || '';
+const LOGIN_PASSWORD = process.env.LOGIN_PASSWORD || '';
+
+if (!LOGIN_EMAIL || !LOGIN_PASSWORD) {
+  console.error('❌ 必须设置 LOGIN_EMAIL 与 LOGIN_PASSWORD（Worker Secrets 配置的合法凭据）');
+  process.exit(2);
+}
+
+// Cookie jar：登录成功后保存，所有 /api/* 业务调用都自动带 Cookie
+const cookieJar = new Map(); // name -> value
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function setCookieFromHeader(setCookie) {
+  if (!setCookie) return;
+  // 仅取首个 cookie 名称=值；忽略属性
+  const first = setCookie.split(/,(?=\s*[^=;]+=)/)[0] || setCookie;
+  const eq = first.indexOf('=');
+  if (eq < 0) return;
+  const name = first.slice(0, eq).trim();
+  const value = first.slice(eq + 1).split(';')[0].trim();
+  if (name) cookieJar.set(name, value);
+}
+
+function cookieHeader() {
+  return Array.from(cookieJar.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
 async function api(path, options = {}) {
   const url = `${API_BASE}${path}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+  };
+  if (cookieJar.size > 0) headers['Cookie'] = cookieHeader();
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
-  const data = await res.json();
-  return { status: res.status, data, ok: res.ok };
+  // 记录 Set-Cookie（覆盖）
+  const sc = res.headers.get('set-cookie');
+  if (sc) setCookieFromHeader(sc);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  return { status: res.status, data, ok: res.ok, headers: res.headers };
 }
 
 async function test(name, fn) {
@@ -40,27 +81,60 @@ async function runTests() {
   let failed = 0;
   const results = [];
 
+  // 0. 网页登录（WP-006）：未登录时所有 /api/* 都被 401 拦截
+  let r = await test('0. 网页登录（email+password）', async () => {
+    const { status, data } = await api('/auth/login', {
+      method: 'POST',
+      body: { email: LOGIN_EMAIL, password: LOGIN_PASSWORD },
+    });
+    if (status !== 200) throw new Error(`登录失败: ${status} ${JSON.stringify(data)}`);
+    if (!cookieJar.has('shak_pmo_session')) throw new Error('登录未返回 Session Cookie');
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: '网页登录', passed: r.passed });
+
+  if (!cookieJar.has('shak_pmo_session')) {
+    console.log('\n⏭️  跳过后续测试（无法登录）');
+    return { passed, failed, results };
+  }
+
+  // 0b. 未登录时 /api/portfolios 应被 401（确认鉴权生效）
+  r = await test('0b. 未登录 API 拒绝（401 JSON）', async () => {
+    // 清空 cookie 重新请求一次
+    const saved = new Map(cookieJar);
+    cookieJar.clear();
+    const { status, data } = await api('/portfolios');
+    cookieJar.clear();
+    saved.forEach((v, k) => cookieJar.set(k, v));
+    if (status !== 401) throw new Error(`未登录期望 401，实际 ${status} ${JSON.stringify(data)}`);
+    if (data && data.error !== undefined) {
+      // 401 JSON 即可
+    }
+  });
+  if (r.passed) passed++; else failed++;
+  results.push({ name: '未登录 API 拒绝', passed: r.passed });
+
   // 1. 健康检查
-  let r = await test('1. 健康检查', async () => {
+  let r2 = await test('1. 健康检查', async () => {
     const { status, data } = await api('/health');
     if (status !== 200 || data.status !== 'ok') throw new Error(`状态: ${status}`);
   });
-  if (r.passed) passed++; else failed++;
-  results.push({ name: '健康检查', passed: r.passed });
+  if (r2.passed) passed++; else failed++;
+  results.push({ name: '健康检查', passed: r2.passed });
 
   // 2. 创建组合
   let portfolioId;
-  r = await test('2. 创建组合', async () => {
+  r2 = await test('2. 创建组合', async () => {
     const { status, data } = await api('/portfolios', {
       method: 'POST',
-      body: { name: 'Test Portfolio', description: 'Smoke Test', actor: 'smoke-test' }
+      body: { name: 'Test Portfolio', description: 'Smoke Test' }
     });
-    if (status !== 201) throw new Error(`创建失败: ${status}`);
+    if (status !== 201) throw new Error(`创建失败: ${status} ${JSON.stringify(data)}`);
     portfolioId = data.id;
     if (!portfolioId) throw new Error('无返回 ID');
   });
-  if (r.passed) passed++; else failed++;
-  results.push({ name: '创建组合', passed: r.passed });
+  if (r2.passed) passed++; else failed++;
+  results.push({ name: '创建组合', passed: r2.passed });
 
   if (!portfolioId) {
     console.log('\n⏭️  跳过后续测试（无法创建组合）');
@@ -72,7 +146,7 @@ async function runTests() {
   r = await test('3. 创建 Stage', async () => {
     const { status, data } = await api(`/portfolios/${portfolioId}/stages`, {
       method: 'POST',
-      body: { name: 'Test Stage', actor: 'smoke-test' }
+      body: { name: 'Test Stage' }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
     stageId = data.id;
@@ -91,7 +165,7 @@ async function runTests() {
         stage: 'Test Stage',
         health: 'green',
         expectation: 'Test expectation',
-        actor: 'smoke-test'
+        
       }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
@@ -107,7 +181,7 @@ async function runTests() {
 
   // 4.1 Stage 删除保护 - 活动项目引用时拒绝
   r = await test('4.1 Stage 删除保护 - 活动项目引用时拒绝', async () => {
-    const res = await api(`/stages/${stageId}`, { method: 'DELETE', body: { actor: 'smoke-test' } });
+    const res = await api(`/stages/${stageId}`, { method: 'DELETE', body: {  } });
     if (res.status !== 400) throw new Error(`应为 400，实际: ${res.status}`);
     if (res.data.success !== false) throw new Error('应返回失败');
     if (!res.data.message.includes('使用')) throw new Error(`消息应包含"使用": ${res.data.message}`);
@@ -124,7 +198,7 @@ async function runTests() {
         title: 'Test Child Project',
         owner: 'Test Owner',
         parent_id: projectId,
-        actor: 'smoke-test'
+        
       }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
@@ -143,7 +217,7 @@ async function runTests() {
         start_date: '2026-08-01',
         end_date: '2026-08-07',
         status: 'planned',
-        actor: 'smoke-test'
+        
       }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
@@ -161,7 +235,7 @@ async function runTests() {
         start_date: '2026-08-03',
         end_date: '2026-08-05',
         status: 'done',
-        actor: 'smoke-test'
+        
       }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
@@ -175,7 +249,7 @@ async function runTests() {
       method: 'POST',
       body: {
         name: 'Test TBD Step',
-        actor: 'smoke-test'
+        
       }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
@@ -213,7 +287,7 @@ async function runTests() {
   r = await test('12. 归档阻断 - 未完成子项目存在', async () => {
     const res = await api(`/projects/${projectId}/archive`, {
       method: 'POST',
-      body: { actor: 'smoke-test' }
+      body: {  }
     });
     if (res.status === 200) throw new Error('未完成的子项目存在时不应允许归档');
     if (!res.data.message.includes('后代')) throw new Error(`错误消息不正确: ${res.data.message}`);
@@ -225,7 +299,7 @@ async function runTests() {
   r = await test('13. 完成子项目', async () => {
     const { status } = await api(`/projects/${childProjectId}/complete`, {
       method: 'POST',
-      body: { actor: 'smoke-test' }
+      body: {  }
     });
     if (status !== 200) throw new Error(`完成失败: ${status}`);
   });
@@ -236,7 +310,7 @@ async function runTests() {
   r = await test('14. 完成父项目', async () => {
     const { status } = await api(`/projects/${projectId}/complete`, {
       method: 'POST',
-      body: { actor: 'smoke-test' }
+      body: {  }
     });
     if (status !== 200) throw new Error(`完成失败: ${status}`);
   });
@@ -247,7 +321,7 @@ async function runTests() {
   r = await test('15. 归档放行 - 全部后代完成', async () => {
     const res = await api(`/projects/${projectId}/archive`, {
       method: 'POST',
-      body: { actor: 'smoke-test' }
+      body: {  }
     });
     if (res.status !== 200 || !res.data.success) throw new Error(`归档失败: ${JSON.stringify(res.data)}`);
   });
@@ -256,7 +330,7 @@ async function runTests() {
 
   // 16. Stage 删除保护 - 已归档项目引用时仍拒绝
   r = await test('16. Stage 删除保护 - 已归档项目引用时拒绝', async () => {
-    const res = await api(`/stages/${stageId}`, { method: 'DELETE', body: { actor: 'smoke-test' } });
+    const res = await api(`/stages/${stageId}`, { method: 'DELETE', body: {  } });
     if (res.status !== 400) throw new Error(`应为 400，实际: ${res.status}`);
     if (res.data.success !== false) throw new Error('应返回失败');
   });
@@ -277,7 +351,7 @@ async function runTests() {
   r = await test('18. 创建关联资料 #1', async () => {
     const { status, data } = await api(`/projects/${childProjectId}/links`, {
       method: 'POST',
-      body: { title: '项目文档', url: 'https://example.com/doc1', actor: 'smoke-test' }
+      body: { title: '项目文档', url: 'https://example.com/doc1' }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
     linkId1 = data.id;
@@ -288,7 +362,7 @@ async function runTests() {
   r = await test('19. 创建关联资料 #2', async () => {
     const { status, data } = await api(`/projects/${childProjectId}/links`, {
       method: 'POST',
-      body: { title: '设计稿', url: 'http://example.com/design', actor: 'smoke-test' }
+      body: { title: '设计稿', url: 'http://example.com/design' }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
     linkId2 = data.id;
@@ -299,7 +373,7 @@ async function runTests() {
   r = await test('20. 创建关联资料 #3', async () => {
     const { status, data } = await api(`/projects/${childProjectId}/links`, {
       method: 'POST',
-      body: { title: 'API 文档', url: 'https://example.com/api', actor: 'smoke-test' }
+      body: { title: 'API 文档', url: 'https://example.com/api' }
     });
     if (status !== 201) throw new Error(`创建失败: ${status}`);
     linkId3 = data.id;
@@ -320,7 +394,7 @@ async function runTests() {
   r = await test('22. 关联资料 URL 校验 - 非法协议拒绝', async () => {
     const res = await api(`/projects/${childProjectId}/links`, {
       method: 'POST',
-      body: { title: '非法链接', url: 'ftp://example.com/file', actor: 'smoke-test' }
+      body: { title: '非法链接', url: 'ftp://example.com/file' }
     });
     if (res.status !== 400) throw new Error(`应为 400，实际: ${res.status}`);
     if (!res.data.error.includes('http')) throw new Error(`应包含 http 提示: ${res.data.error}`);
@@ -332,7 +406,7 @@ async function runTests() {
   r = await test('23. 修改关联资料', async () => {
     const { status } = await api(`/links/${linkId1}`, {
       method: 'PUT',
-      body: { title: '更新后的项目文档', actor: 'smoke-test' }
+      body: { title: '更新后的项目文档' }
     });
     if (status !== 200) throw new Error(`修改失败: ${status}`);
   });
@@ -343,7 +417,7 @@ async function runTests() {
   r = await test('24. 删除关联资料', async () => {
     const { status } = await api(`/links/${linkId1}`, {
       method: 'DELETE',
-      body: { actor: 'smoke-test' }
+      body: {  }
     });
     if (status !== 200) throw new Error(`删除失败: ${status}`);
   });
@@ -363,7 +437,7 @@ async function runTests() {
   r = await test('26. 更新步骤 - 改日期', async () => {
     const { status } = await api(`/steps/${stepId}`, {
       method: 'PUT',
-      body: { start_date: '2026-08-15', end_date: '2026-08-21', actor: 'smoke-test' }
+      body: { start_date: '2026-08-15', end_date: '2026-08-21' }
     });
     if (status !== 200) throw new Error(`更新失败: ${status}`);
   });
@@ -374,7 +448,7 @@ async function runTests() {
   r = await test('27. 删除步骤', async () => {
     const { status } = await api(`/steps/${stepId}`, {
       method: 'DELETE',
-      body: { actor: 'smoke-test' }
+      body: {  }
     });
     if (status !== 200) throw new Error(`删除失败: ${status}`);
   });
@@ -388,19 +462,19 @@ async function runTests() {
   r = await test('28. WP-005 创建 TBD 场景项目与两个未排期步骤', async () => {
     const p = await api(`/portfolios/${portfolioId}/projects`, {
       method: 'POST',
-      body: { title: 'TBD 场景项目', owner: 'PM', stage: 'Test Stage', health: 'blue', actor: 'smoke-test' }
+      body: { title: 'TBD 场景项目', owner: 'PM', stage: 'Test Stage', health: 'blue' }
     });
     if (p.status !== 201) throw new Error(`项目创建失败: ${p.status}`);
     tbdProjectId = p.data.id;
 
     const s1 = await api(`/projects/${tbdProjectId}/steps`, {
-      method: 'POST', body: { name: 'TBD 工作包 A', actor: 'smoke-test' }
+      method: 'POST', body: { name: 'TBD 工作包 A' }
     });
     if (s1.status !== 201 || s1.data.status !== 'tbd') throw new Error('TBD A 应为 tbd 状态');
     tbdStepId = s1.data.id;
 
     const s2 = await api(`/projects/${tbdProjectId}/steps`, {
-      method: 'POST', body: { name: 'TBD 工作包 B', actor: 'smoke-test' }
+      method: 'POST', body: { name: 'TBD 工作包 B' }
     });
     if (s2.status !== 201 || s2.data.status !== 'tbd') throw new Error('TBD B 应为 tbd 状态');
   });
@@ -429,7 +503,7 @@ async function runTests() {
   r = await test('30. WP-005 TBD→Plan 后进入日期轴', async () => {
     const upd = await api(`/steps/${tbdStepId}`, {
       method: 'PUT',
-      body: { start_date: '2026-08-05', end_date: '2026-08-12', status: 'planned', actor: 'smoke-test' }
+      body: { start_date: '2026-08-05', end_date: '2026-08-12', status: 'planned' }
     });
     if (upd.status !== 200) throw new Error(`更新失败: ${upd.status}`);
 
@@ -450,7 +524,7 @@ async function runTests() {
   r = await test('31. WP-005 Plan→TBD 后回到未排期区', async () => {
     const upd = await api(`/steps/${tbdStepId}`, {
       method: 'PUT',
-      body: { start_date: '', end_date: '', actor: 'smoke-test' }
+      body: { start_date: '', end_date: '' }
     });
     if (upd.status !== 200) throw new Error(`更新失败: ${upd.status}`);
     if (upd.data.status !== 'tbd') throw new Error(`清空日期后状态应回到 tbd，实际 ${upd.data.status}`);
@@ -503,11 +577,11 @@ async function runTests() {
   r = await test('35. WP-005 长跨度步骤按真实月格落位', async () => {
     // 新建一个带长跨度步骤的项目
     const p = await api(`/portfolios/${portfolioId}/projects`, {
-      method: 'POST', body: { title: '长跨度项目', owner: 'PM', actor: 'smoke-test' }
+      method: 'POST', body: { title: '长跨度项目', owner: 'PM' }
     });
     await api(`/projects/${p.data.id}/steps`, {
       method: 'POST',
-      body: { name: '跨年步骤', start_date: '2028-03-15', end_date: '2030-09-20', status: 'planned', actor: 'smoke-test' }
+      body: { name: '跨年步骤', start_date: '2028-03-15', end_date: '2030-09-20', status: 'planned' }
     });
     const { data } = await api(`/portfolios/${portfolioId}/gantt?start=2026-01-01&end=2035-12-31&scale=month`);
     const row = data.rows.find(x => x.project.id === p.data.id);
@@ -522,7 +596,7 @@ async function runTests() {
 
   // 清理测试数据
   console.log('\n🧹 清理测试数据...');
-  await api(`/portfolios/${portfolioId}`, { method: 'DELETE', body: { actor: 'smoke-test' } });
+  await api(`/portfolios/${portfolioId}`, { method: 'DELETE', body: {  } });
 
   console.log(`\n📊 测试结果: ${passed}/${passed + failed} 通过`);
   

@@ -1,0 +1,20 @@
+{
+  "mcpName": "shak-project-portfolio-governance",
+  "systemName": "Shak 项目组合治理系统",
+  "productionBaseUrl": "https://pmo.pmoforms.com",
+  "mcpUrl": "https://pmo.pmoforms.com/mcp",
+  "skillVersion": "1.0.0",
+  "serverVersion": "1.0.0",
+  "toolProtocolVersion": "2025-06-18",
+  "manifestUrl": "https://pmo.pmoforms.com/agent/manifest.json",
+  "files": {
+    "skill": {
+      "path": "SKILL.md",
+      "url": "https://pmo.pmoforms.com/agent/skills/shak-project-portfolio-governance/SKILL.md"
+    },
+    "rule": {
+      "path": "shak-project-portfolio-governance.mdc",
+      "url": "https://pmo.pmoforms.com/agent/skills/shak-project-portfolio-governance/shak-project-portfolio-governance.mdc"
+    }
+  }
+}

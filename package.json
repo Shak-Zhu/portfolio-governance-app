@@ -3,21 +3,28 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Shak 项目组合治理系统 - Cloudflare Worker + D1",
+  "description": "Shak 项目组合治理系统 - Cloudflare Worker + D1（单用户网页登录 + Bearer MCP）",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build": "wrangler deploy --dry-run",
     "lint": "eslint src/**/*.ts",
     "test": "node scripts/unit-test.mjs",
+    "test:e2e": "node scripts/real-mcp-test.mjs",
     "db:migrate": "wrangler d1 migrations apply pmo-governance-prod --local",
     "db:init": "wrangler d1 execute pmo-governance-prod --local --file=./drizzle/seed.sql",
     "db:smoke": "node scripts/smoke-test.js",
-    "db:create": "wrangler d1 create pmo-governance-local"
+    "db:create": "wrangler d1 create pmo-governance-local",
+    "agent:manifest": "node scripts/generate-agent-manifest.mjs",
+    "skill:build": "node scripts/build-skill-manifest.mjs",
+    "mcp:test": "node scripts/mcp-test.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",
-    "hono": "^4.4.0"
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.20.1",
+    "hono": "^4.4.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",

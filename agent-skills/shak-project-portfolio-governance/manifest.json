@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "1.0.0",
+  "skillName": "shak-project-portfolio-governance",
+  "systemName": "Shak 项目组合治理系统",
+  "skillVersion": "1.0.0",
+  "mcpName": "shak-project-portfolio-governance",
+  "mcpUrl": "https://pmo.pmoforms.com/mcp",
+  "productionBaseUrl": "https://pmo.pmoforms.com",
+  "toolProtocolVersion": "2025-06-18",
+  "serverVersion": "1.0.0",
+  "skillSourceCommit": null,
+  "generatedAt": "2026-07-30T01:35:49.138Z",
+  "files": {
+    "SKILL.md": {
+      "sha256": "e85a113bc4fcf2c1476dcd43031f16a762959875dc3ffb207a5acb606888ccf0",
+      "bytes": 8132,
+      "contentType": "text/markdown; charset=utf-8"
+    },
+    "agent.config.json": {
+      "sha256": "5263b49a43f5f0ac093f4d0708ff8b936ce98445cc2be6949edbad0182535a38",
+      "bytes": 717,
+      "contentType": "application/json; charset=utf-8"
+    },
+    "agents/openai.yaml": {
+      "sha256": "b48a940816ed60878821bc004289dbcc4d5c4b13ffdda25e6713096c9c3a5257",
+      "bytes": 1896,
+      "contentType": "application/yaml; charset=utf-8"
+    },
+    "references/governance-rules.md": {
+      "sha256": "8475c350c5ab618a95432ea7a61d2b32a0c97c795d000cb475d03ee6a8030c95",
+      "bytes": 7911,
+      "contentType": "text/markdown; charset=utf-8"
+    },
+    "references/tool-contract.md": {
+      "sha256": "e3126e7b1731d2d70ff8036ea8da041a2c3c792ffed4b081eea9765ee5bcd4d7",
+      "bytes": 7166,
+      "contentType": "text/markdown; charset=utf-8"
+    },
+    "shak-project-portfolio-governance.mdc": {
+      "sha256": "07dfde8b9718ad59996e825b5c1421fbe7a0aacc4b5bb2e09548f932ab0a9ec4",
+      "bytes": 3582,
+      "contentType": "text/markdown; charset=utf-8"
+    }
+  },
+  "installNotes": {
+    "codex": "参见网页 /api/agent/install (Codex tab)；下载到 ~/.codex/skills/shak-project-portfolio-governance/",
+    "cursor": "合并 ~/.cursor/mcp.json 并安装 .cursor/rules/shak-project-portfolio-governance.mdc",
+    "general": "通过任意兼容 MCP Streamable HTTP 客户端调用 https://pmo.pmoforms.com/mcp"
+  },
+  "privacy": "本 manifest 不包含真实 Bearer Token、登录凭据、Session 信息或 GitHub PAT。"
+}

@@ -1,0 +1,58 @@
+---
+description: 通过官方 Bearer Token MCP（shak-project-portfolio-governance）维护 Shak 项目组合治理系统的组合/项目/层级/步骤/Stage/关联资料/甘特/审计/归档。所有写操作走官方 MCP。
+globs:
+alwaysApply: false
+---
+
+# Shak 项目组合治理系统 · Cursor Rule
+
+通过 **官方 Bearer MCP** 维护 Shak 项目组合治理系统。唯一 MCP 名称 `shak-project-portfolio-governance`，
+唯一 MCP URL `https://pmo.pmoforms.com/mcp`。本 Rule 与 Git 权威源 `SKILL.md` 内容一致，供 Cursor 使用。
+
+## 核心纪律
+
+- 只用本 MCP 工具；禁止直写 D1、禁止直调私有 REST（`/api/*`）、禁止浏览器自动化、禁止任意 SQL/HTTP。
+- 鉴权用 `Authorization: Bearer <token>`，Token 由管理员从「Agent 接入中心」一键复制。
+- 不猜测 ID：`portfolioId/projectId/stepId/stageId/linkId` 必须先 `list_*`/`get_*` 读取确认。
+- 不编造业务时间：日期只来自用户输入或已存数据；`created_at/updated_at` 由服务端生成。
+- actor 固定为 `mcp:shak-pmo-owner`，客户端不可伪造，不要传 `actor`。
+- 写前先读；工具返回 `isError: true` 时读原因、纠参重试，不得伪造成功。
+
+## 鉴权方式（Bearer Token）
+
+- Streamable HTTP：`POST https://pmo.pmoforms.com/mcp`
+- Header：`Authorization: Bearer <token>`
+- 缺失/错误 → `401` JSON-RPC 错误。
+- 不存在 OAuth / scope / 动态注册 / KV token / Access / `.well-known/oauth-*` 任何机制。
+- Token 绝不出现在静态资产、Git、Skill、manifest、日志、报告。
+
+## 工具矩阵
+
+| 领域 | 工具 |
+|---|---|
+| 组合 | list_portfolios / get_portfolio / create_portfolio / update_portfolio / delete_portfolio |
+| 项目与层级 | list_projects / get_project / create_project / update_project / delete_project / complete_project / archive_project / get_project_stats |
+| 步骤与 TBD | list_steps / list_portfolio_steps / create_step / update_step / delete_step |
+| Stage | list_stages / create_stage / update_stage / delete_stage |
+| 关联资料 | list_project_links / create_project_link / update_project_link / delete_project_link |
+| 甘特 | get_gantt |
+| 审计与归档 | list_audit_events / get_object_audit / list_archived_projects |
+| 发现与健康 | get_capabilities |
+
+## 关键业务规则
+
+- **项目层级**：`parent_id` 建立父子；`delete_project` 存在未归档子项目时被拒绝。
+- **整体归档**：`archive_project` 仅顶级项目，且所有后代必须已完成，否则被拒。
+- **TBD ↔ Plan**：`create_step` 无合法起止日期或 `status=tbd` → 未排期区；`update_step` 补齐合法起止日期（原 tbd）→ 自动 `planned` 落时间轴；清空任一日期（传 `""`）→ 自动回 `tbd`。日期 `YYYY-MM-DD`。
+- **Stage 保护**：被任何项目（含已归档）引用的 Stage 禁止改名与删除。
+- **URL 校验**：关联资料 `url` 仅接受 `http(s)`。
+- **强 schema**：工具使用 Zod `.strict()`，未声明字段（如 `actor`、`scope`）会被运行时拒绝；请只传必要字段。
+- **甘特查询**：`get_gantt({ portfolioId, start?, end?, scale? })`，scale ∈ day/week/month，返回 timeline/rows.bars/unscheduled，支持长区间无截断。
+
+## 错误恢复
+
+- 401 → 检查 Bearer Token 是否复制完整。
+- `isError` + "不存在" → 先 list/get 确认 ID。
+- `isError` + "http" → url 必须 http(s)。
+- `isError` + "子项目/后代/完成" → 先处理子项目再删除/归档。
+- `isError` + strict / unknown → 移除多余字段后重试。

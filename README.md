@@ -2,7 +2,7 @@
 
 系统唯一正式名称：**Shak 项目组合治理系统**。基于 Cloudflare Workers + D1 的多项目治理甘特图应用。
 
-> 命名说明：用户可见的网页标题、H1、产品文档统一使用“Shak 项目组合治理系统”。技术资源标识（Worker `pmo-governance`、D1 `pmo-governance-prod`、域名 `pmo.pmoforms.com`、GitHub 仓库 slug）不随命名变更而改名。
+> 命名说明：用户可见的网页标题、H1、产品文档统一使用"Shak 项目组合治理系统"。技术资源标识（Worker `pmo-governance`、D1 `pmo-governance-prod`、域名 `pmo.pmoforms.com`、GitHub 仓库 slug）不随命名变更而改名。
 
 ## 技术栈
 
@@ -10,16 +10,19 @@
 - **后端**: Cloudflare Workers (Hono 框架)
 - **数据库**: Cloudflare D1
 - **构建**: Wrangler CLI
+- **MCP**: `agents/mcp` 的官方 `createMcpHandler` + `@modelcontextprotocol/server` 的 `McpServer` + Zod（运行时严格 schema）
 
 ## 功能特性
 
+- 单用户邮箱+密码登录（`/login`、`/api/auth/*`），Session Cookie `HttpOnly; Secure; SameSite=Strict` 8 小时有效
 - 组合（Portfolio）管理
 - 项目层级（父子关系）
 - 步骤计划与甘特图（日/周/月视图）
-- 自定义 Stage 管理
-- 项目关联资料（支持 http(s) URL）
+- 自定义 Stage 管理（含删除/改名保护）
+- 项目关联资料（仅支持 http(s) URL）
 - 整体归档规则（仅顶级项目 + 全部后代完成）
 - 审计日志
+- 官方原生 MCP：`https://pmo.pmoforms.com/mcp`，单用户 Bearer Token；网页 /api/agent/install 在登录会话内返回含真实 Token 的安装指令
 
 ## 快速开始
 
@@ -61,7 +64,16 @@ database_name = "pmo-governance-prod"
 database_id = "YOUR_ACTUAL_DATABASE_ID"
 ```
 
-### 4. 运行 Migrations
+### 4. 配置 Worker Secrets（开发与生产都要）
+
+复制 `.dev.vars.example` 为 `.dev.vars`（已 `.gitignore`）填入本地临时值；生产通过 `wrangler secret put` 注入：
+
+- `SHAK_PMO_WEB_LOGIN_EMAIL` — 唯一合法账号邮箱
+- `SHAK_PMO_WEB_LOGIN_PASSWORD` — 唯一合法账号密码
+- `SHAK_PMO_SESSION_SECRET` — ≥ 32 字节随机串，用于 Session Cookie HMAC 签名
+- `SHAK_PMO_MCP_TOKEN` — 单用户 MCP Bearer Token；本地任意 ≥ 32 字节随机串
+
+### 5. 运行 Migrations
 
 ```bash
 # 本地 D1
@@ -70,13 +82,13 @@ npm run db:migrate
 
 在空本地 D1 连续执行两次均应成功（幂等性）。
 
-### 5. 初始化样例数据（可选）
+### 6. 初始化样例数据（可选）
 
 ```bash
 npm run db:init
 ```
 
-### 6. 启动本地开发服务器
+### 7. 启动本地开发服务器
 
 ```bash
 npm run dev
@@ -84,11 +96,12 @@ npm run dev
 
 默认监听 `http://localhost:8787`（可用 `npm run dev -- --port 8788` 指定端口）。
 
-Worker 会把非 `/api/*` 请求转交给 `[assets]` 绑定（`public/` 目录），因此直接访问以下路径均返回 200：
+Worker 会把非 `/api/*` 与非 `/mcp` 请求转交给 `[assets]` 绑定（`public/` 目录），因此直接访问以下路径均返回 200：
 
-- `/` 与 `/index.html` → 网页（text/html）
-- `/app.js`、`/styles.css` → 前端静态资源
+- `/login`、`/index.html`、`/` → 网页（text/html）
+- `/app.js`、`/styles.css`、`/login.js` → 前端静态资源
 - `/api/health` → API 健康检查（application/json）
+- `/agent/manifest.json`、`/agent/skills/shak-project-portfolio-governance/*` → Agent Skill 静态资产
 
 ## 开发命令
 
@@ -100,21 +113,65 @@ Worker 会把非 `/api/*` 请求转交给 `[assets]` 绑定（`public/` 目录�
 | `npm run build` | 构建预览（dry-run，不部署） |
 | `npm run db:migrate` | 运行数据库迁移 |
 | `npm run db:init` | 初始化样例数据 |
-| `npm run db:smoke` | 运行 API 冒烟测试（需先启动 dev，见下） |
+| `npm run db:smoke` | 运行 API 冒烟测试（需先启动 dev；带 Cookie 登录） |
+| `npm run agent:manifest` | 生成版本化 Agent Skill manifest 并同步 `public/agent/` 静态资产（含 SHA-256） |
+| `npm run skill:build` | 生成本地 `agent-skills/.../manifest.json`（覆盖 bundle 全文件 + SHA-256；不发布 GitHub，由 Codex 落 commit SHA） |
+| `npm run test:e2e` | 真 Worker runtime 集成测试（Miniflare + bundle 内 `public/*` 与 MCP Server SDK） |
+| `npm run mcp:test` | 运行 MCP Bearer 集成测试（需先启动 dev） |
 
 ### 运行 API 冒烟测试
 
-先在一个终端启动本地 Worker，再在另一个终端指定 `API_URL`（必须包含 `/api` 后缀）：
+冒烟测试需要登录态；先用 dev 启动 Worker，并准备 `.dev.vars` 后跑测试脚本：
 
 ```bash
 # 终端 1
 npm run dev -- --port 8788
 
 # 终端 2
-API_URL=http://127.0.0.1:8788/api npm run db:smoke
+API_URL=http://127.0.0.1:8788/api LOGIN_EMAIL=<email> LOGIN_PASSWORD=<password> \
+  npm run db:smoke
 ```
 
+测试脚本内部会先 `POST /api/auth/login` 取 Cookie，然后跑既有业务回归。
+
+### 运行 MCP Bearer 集成测试
+
+```bash
+# 终端 1
+npm run dev -- --port 8788
+
+# 终端 2
+MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars | cut -d= -f2) \
+  npm run mcp:test
+```
+
+测试覆盖：Bearer 鉴权（无/错/对）、`initialize`、`tools/list`、全 31 工具运行时 schema 拒绝、写领域 actor 审计。
+
+### 运行真 Worker runtime 集成测试（无需 dev server）
+
+`npm run test:e2e` 用 Miniflare 启动真 Worker（不在沙箱外暴露端口），覆盖：
+
+- 缺失/错误/正确 Bearer + initialize + tools/list + 31 工具 schema 严格校验
+- 业务规则：Stage 删除保护被引用时拒绝、关联资料 URL 协议校验、create_step 缺日期视为未排期
+- 网页登录与保护：未登录 `GET /` → 302 `/login`、登录成功带 Cookie 可访问、`/api/agent/install` 含 `launchctl setenv` + `--bearer-token-env-var`、logout 立即失效
+- `/mcp` 永不返回 302/HTML（即使带 Cookie）
+
+输出默认 25 项断言全过；任何失败都会打印根因（不静默）。
+
 ## API 端点
+
+### 鉴权（公共）
+
+- `GET /login` — 登录页
+- `POST /api/auth/login` — 邮箱+密码登录，返回 `Set-Cookie`
+- `POST /api/auth/logout` — 登出，Cookie 失效
+- `GET /api/auth/session` — 查询当前会话状态
+- `GET /api/health` — 健康检查
+- `GET /api/agent/config` — Agent 接入配置（公共，不含 secret）
+
+### MCP 端点
+
+- `POST /mcp` — 官方 Streamable HTTP MCP，需 `Authorization: Bearer <token>`
 
 ### 组合（Portfolio）
 
@@ -165,6 +222,10 @@ API_URL=http://127.0.0.1:8788/api npm run db:smoke
 
 - `GET /api/portfolios/:pid/audit` - 获取审计事件
 - `GET /api/audit/:type/:id` - 获取对象审计历史
+
+### Agent 接入中心（需登录）
+
+- `GET /api/agent/install` - 返回 Codex / Cursor / 通用 MCP Client 三段含真实 Bearer Token 的安装文案；`Cache-Control: no-store`
 
 ## 数据库 Schema
 
@@ -261,7 +322,7 @@ API_URL=http://127.0.0.1:8788/api npm run db:smoke
 
 ## 未排期工作包（TBD）
 
-“未排期工作包”是甘特图下方的独立区域，承载所有尚未确定排期的步骤，与日期轴完全分离。
+"未排期工作包"是甘特图下方的独立区域，承载所有尚未确定排期的步骤，与日期轴完全分离。
 
 - **判定为未排期的条件**：缺少 `start_date` 或 `end_date`、日期非法、开始晚于结束，或状态为 `tbd`。
 - **展示形式**：按项目分组，每组显示项目名称、Owner、Stage；组内每张工作包为固定尺寸的灰色虚线卡，卡内再次标注所属项目与工作包名称。
@@ -276,13 +337,95 @@ API_URL=http://127.0.0.1:8788/api npm run db:smoke
 - 每次创建、修改、删除均写入审计记录
 - 点击链接在新窗口打开
 
+## 网页登录与 MCP 鉴权（WP-006）
+
+### 网页登录
+
+- `GET /login` 提供原生邮箱+密码登录页。
+- 凭据来源：Worker Secrets `SHAK_PMO_WEB_LOGIN_EMAIL` / `SHAK_PMO_WEB_LOGIN_PASSWORD`。
+- 登录成功：`Set-Cookie: shak_pmo_session=<HMAC token>`；属性 `HttpOnly; Secure; SameSite=Strict; Path=/`；8 小时有效。
+- 凭据校验：时序安全字节比较（`timingSafeEqual`），长度不同时仍消耗时间避免侧信道。
+- 登出：`POST /api/auth/logout`，Cookie 立即失效。
+- 未登录访问网页：跳转 `/login`；未登录调用 API：JSON 401。
+
+### MCP Bearer Token
+
+- 唯一鉴权：`Authorization: Bearer <token>`，与 Worker Secret `SHAK_PMO_MCP_TOKEN` 时序安全比较。
+- 缺失/错误 → JSON 401（带 `WWW-Authenticate: Bearer realm="shak-pmo-mcp"`）；绝不返回 302、HTML、OAuth 元数据。
+- `/mcp` 与网页登录完全独立：标准 MCP Client 无 Cookie 带正确 Bearer 即可成功。
+- 不实现 OAuth / scope / 动态注册 / KV token / Access OAuth / `.well-known/oauth-*`。
+- 所有 MCP 写工具的审计 actor 固定为 `mcp:shak-pmo-owner`，由服务端注入，客户端不可覆盖。
+
+## Agent 接入中心（原生 MCP）
+
+系统内置一个**官方、认证、可审计**的 MCP（Model Context Protocol）端点，让 Codex、Cursor 或任何兼容 MCP Inspector 的客户端，
+通过统一业务服务准确维护本系统的全部能力。所有写操作复用既有校验与审计，绝不绕过规则直写数据库。
+
+- **MCP 名称（固定）**：`shak-project-portfolio-governance`
+- **MCP URL（生产）**：`https://pmo.pmoforms.com/mcp`（标准 Streamable HTTP）
+- **鉴权**：`Authorization: Bearer <token>`（Token 由 Codex 注入 Worker Secret `SHAK_PMO_MCP_TOKEN`）
+- **协议方法**：`initialize` / `ping` / `tools/list` / `tools/call`
+- **单一配置源**：`agent-skills/shak-project-portfolio-governance/agent.config.json`
+  → 由 `src/mcp/config.ts` 导入，网页接入中心、manifest、server 版本号全部从此派生，防止漂移。
+
+### 工具矩阵（全量能力）
+
+| 领域 | 工具 | 业务副作用 |
+|---|---|---|
+| 组合 | list_portfolios / get_portfolio / create_portfolio / update_portfolio / delete_portfolio | 写操作产生审计事件（actor=mcp:shak-pmo-owner） |
+| 项目与层级 | list_projects / get_project / create_project / update_project / delete_project / complete_project / archive_project / get_project_stats | parent_id 建立层级；delete 受子项目保护；archive 受后代完成规则 |
+| 步骤与 TBD | list_steps / list_portfolio_steps / create_step / update_step / delete_step | 日期/status 决定是否进入时间轴或未排期区 |
+| Stage | list_stages / create_stage / update_stage / delete_stage | 被引用 Stage 禁改名、禁删除 |
+| 关联资料 | list_project_links / create_project_link / update_project_link / delete_project_link | url 仅 http(s) |
+| 甘特 | get_gantt（日/周/月，返回 timeline / rows.bars / unscheduled） | 只读 |
+| 审计与归档 | list_audit_events / get_object_audit / list_archived_projects | 只读 |
+| 发现与健康 | get_capabilities（版本 / manifest URL / 工具协议 / 鉴权模式 / 健康） | 只读 |
+
+### 网页「Agent 接入中心」
+
+登录后访问顶部「Agent 接入」标签，提供 Codex、Cursor、通用 MCP Client 三张卡，每张一个「一键复制安装指令」按钮：
+
+- 复制内容含真实 Bearer Token；通过 `GET /api/agent/install`（带 Cookie）动态生成，响应头 `Cache-Control: no-store`。
+- Codex 指令：`codex mcp add <name> --url <mcp-url> --bearer-token <token> --header "Authorization: Bearer <token>"` + 下载 SKILL.md。
+- Cursor 指令：Python 脚本安全合并 `~/.cursor/mcp.json`（保留其它 MCP），写入 `headers.Authorization`；下载 `.mdc` Rule。
+- 通用 MCP Client：标准 Streamable HTTP + Authorization Header + Manifest/Skill 校验步骤。
+- URL、manifest、版本号全部来自 `/api/agent/config`（公共）；Token 仅在登录会话内由 `/api/agent/install` 注入。
+
+### 版本化 Agent Skill
+
+- Git 权威源：`agent-skills/shak-project-portfolio-governance/{SKILL.md, shak-project-portfolio-governance.mdc, manifest.json}`
+- 生产静态资产：`/agent/manifest.json`、`/agent/skills/shak-project-portfolio-governance/{SKILL.md, *.mdc}`
+- `manifest.json` 含 `skillVersion`、`mcpUrl`、文件 URL、**SHA-256**、工具协议版本、生成时间。
+- 更新 Skill 后运行 `npm run agent:manifest` 重新生成并同步静态资产与哈希。
+
+### 故障排查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `/mcp` 返回 401 | 缺失/错误 Bearer | 检查 `Authorization: Bearer <token>` 是否完整；本地对照 `.dev.vars` 中的 `SHAK_PMO_MCP_TOKEN` |
+| `tools/call` 返回 `isError: true` + "strict" / "unknown key" | 入参含未声明字段 | Zod `.strict()` 拒绝未知字段；移除多余字段（如 `actor`、`scope`）后重试 |
+| `tools/call` 返回 "不存在" | ID 猜测或对象已删 | 先 `list_*`/`get_*` 确认 ID |
+| `tools/call` 返回 "http" | 关联资料 URL 非法 | URL 必须以 `http(s)://` 开头 |
+| `tools/call` 返回 "子项目/后代/完成" | 归档/删除受层级规则限制 | 先完成或处理子项目再操作 |
+| `get_capabilities` 的 `skillVersion` 与本地 manifest 不一致 | Skill 版本漂移 | 重新运行 `npm run agent:manifest` 并重装 Skill |
+| 网页访问跳转 `/login` | 未登录或 Session 失效 | 用邮箱+密码登录；登出按钮位于顶部右侧 |
+| `/api/agent/install` 返回 401 | 未登录 | 登录后再访问 Agent 接入中心 |
+
+### 安全边界
+
+- 无任意 SQL、任意 HTTP 转发或自由文本万能执行工具；仅强类型工具。
+- 代码、网页、Skill、manifest、测试与报告中**不含任何 token/secret/cookie/client secret**。
+- 本工作包**不执行** `wrangler deploy`，不创建或修改 Cloudflare Access / Zero Trust / OAuth App / KV / D1 / R2 / DNS / 域名 / secret / Git remote，不修改既有数据库 schema。
+
 ## 部署前检查
 
 1. ✅ `npm run lint` 无错误
 2. ✅ `npm test` 全部通过
 3. ✅ `npm run build` 构建成功
-4. ✅ `npm run db:migrate` Migration 正常
-5. ✅ `npm run db:smoke` API 测试通过
+4. ✅ `npm run db:migrate` Migration 正常（连续两次幂等）
+5. ✅ `npm run db:smoke` API 测试通过（带 Cookie）
+6. ✅ `npm run mcp:test` MCP Bearer 集成测试通过
+7. ✅ `npm run agent:manifest` 重新生成 manifest，SHA-256 与静态资产一致
 
 ## 目录结构
 
@@ -294,11 +437,18 @@ portfolio-governance-app/
 │   └── seed.sql
 ├── public/
 │   ├── index.html
+│   ├── login.html
+│   ├── login.js
 │   ├── styles.css
-│   └── app.js
+│   ├── app.js
+│   └── agent/
+│       ├── manifest.json
+│       └── skills/shak-project-portfolio-governance/
 ├── scripts/
 │   ├── smoke-test.js
-│   └── unit-test.mjs
+│   ├── unit-test.mjs
+│   ├── mcp-test.mjs
+│   └── generate-agent-manifest.mjs
 ├── src/
 │   ├── api/
 │   │   ├── portfolios.ts
@@ -311,9 +461,13 @@ portfolio-governance-app/
 │   │   ├── db.ts
 │   │   ├── gantt-core.js   # 甘特时间轴/条形/未排期核心逻辑（纯 ESM，供 Worker 与单测共用）
 │   │   └── gantt.ts        # gantt-core 的 TypeScript 封装
+│   ├── mcp/
+│   │   ├── config.ts
+│   │   └── server-sdk.ts   # 官方 MCP Server + Zod；actor=mcp:shak-pmo-owner
 │   ├── types/
 │   │   └── index.ts
-│   └── index.ts
+│   ├── auth.ts             # 网页登录 + HMAC Session Cookie
+│   └── index.ts            # Worker 顶层（Bearer /mcp + Hono 默认处理器）
 ├── package.json
 ├── tsconfig.json
 ├── wrangler.toml

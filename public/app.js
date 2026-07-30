@@ -10,23 +10,39 @@ let state = {
   ganttScale: 'week',
   ganttRange: { start: '', end: '' },
   editingSteps: {},  // 跟踪编辑中的步骤
+  session: null,     // { sub, expiresAt } 或 null
+  agentInstall: null, // 登录后从 /api/agent/install 获取的三段安装文案
 };
 
 // ========== 工具函数 ==========
 async function api(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const opts = {
+    credentials: 'include',
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  const data = await res.json();
+  };
+  if (opts.body && typeof opts.body !== 'string') {
+    opts.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(`${API_BASE}${path}`, opts);
+  if (res.status === 401 && path !== '/auth/login' && path !== '/auth/session') {
+    // 未登录或 Session 失效：跳转到登录页
+    window.location.replace('/login');
+    throw new Error('未登录');
+  }
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error('API 返回非 JSON'); }
   if (!res.ok) throw new Error(data.error || data.message || 'API 错误');
   return data;
 }
 
 function apiRaw(path, options = {}) {
-  // 不抛异常的 API 调用
+  // 不抛异常、不触发重定向
   return fetch(`${API_BASE}${path}`, {
+    credentials: 'include',
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
@@ -70,7 +86,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupProjectDialog();
   setupPortfolioDialog();
   setupStageDialog();
-  
+  setupSessionBox();
+
+  // 第一步：检查登录态；未登录直接去 /login
+  try {
+    const session = await apiRaw('/auth/session');
+    if (!session || !session.authenticated) {
+      window.location.replace('/login');
+      return;
+    }
+    state.session = session;
+    renderSessionBox();
+  } catch {
+    window.location.replace('/login');
+    return;
+  }
+
   try {
     await loadPortfolios();
   } catch (e) {
@@ -78,6 +109,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     alert('初始化失败，请检查服务是否启动');
   }
 });
+
+// ========== 会话显示 / 登出 ==========
+function renderSessionBox() {
+  const box = document.getElementById('sessionBox');
+  const subEl = document.getElementById('sessionSub');
+  if (!box || !subEl) return;
+  if (state.session && state.session.sub) {
+    box.hidden = false;
+    subEl.textContent = `已登录：${state.session.sub}`;
+  } else {
+    box.hidden = true;
+  }
+}
+
+function setupSessionBox() {
+  const btn = document.getElementById('logoutBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+    } catch { /* 忽略 */ }
+    state.session = null;
+    state.agentInstall = null;
+    // 强制跳登录页
+    window.location.replace('/login');
+  });
+}
 
 // ========== 对话框设置 ==========
 function setupDialogs() {
@@ -106,8 +168,118 @@ function setupTabs() {
       if (tab.dataset.view === 'gantt') loadGantt();
       else if (tab.dataset.view === 'data') loadProjects();
       else if (tab.dataset.view === 'archive') loadArchive();
+      else if (tab.dataset.view === 'agent') loadAgentCenter();
     });
   });
+}
+
+// ========== Agent 接入中心 ==========
+// 单一配置源：`/api/agent/config`（公共可读，不含 secret）；
+// 实际带 Bearer Token 的安装文案来自登录后的 `/api/agent/install`，绝不在静态文件中包含 token。
+let agentConfigCache = null;
+
+async function loadAgentCenter() {
+  const statusEl = document.getElementById('agentStatus');
+  const statusText = document.getElementById('agentStatusText');
+  if (!statusEl) return;
+
+  // 第一步：公共 /api/agent/config
+  try {
+    const cfg = await apiRaw('/agent/config');
+    if (!cfg) throw new Error('无法读取接入配置');
+    agentConfigCache = cfg;
+
+    document.getElementById('agentMcpName').textContent = cfg.mcpName || '—';
+    document.getElementById('agentMcpUrl').textContent = cfg.mcpUrl || '—';
+    document.getElementById('agentSkillVersion').textContent = cfg.skillVersion || '—';
+    document.getElementById('agentToolProto').textContent = cfg.toolProtocolVersion || '—';
+    const authEl = document.getElementById('agentAuthMode');
+    if (authEl && cfg.auth) authEl.textContent = `${cfg.auth.header}（${cfg.auth.configured ? '已配置' : '未配置'}）`;
+
+    if (cfg.auth && cfg.auth.configured) {
+      statusEl.dataset.state = 'enabled';
+      statusText.textContent = 'MCP 已配置 Bearer Token。登录后即可一键复制含真实 Token 的安装指令。';
+    } else {
+      statusEl.dataset.state = 'pending';
+      statusText.textContent = 'MCP Token 未配置。请管理员在 Worker Secrets 中设置 SHAK_PMO_MCP_TOKEN。';
+    }
+  } catch (e) {
+    statusEl.dataset.state = 'error';
+    statusText.textContent = '读取 MCP 接入配置失败：' + (e?.message || '');
+    return;
+  }
+
+  // 第二步：若已登录，加载动态安装指令
+  await loadAgentInstallCommands();
+}
+
+async function loadAgentInstallCommands() {
+  const buttons = document.querySelectorAll('.agent-copy');
+  // 未登录：禁用按钮，提示去登录
+  if (!state.session) {
+    buttons.forEach((btn) => {
+      btn.disabled = true;
+      btn.textContent = '登录后可一键复制';
+    });
+    return;
+  }
+  // 已登录：调用 /api/agent/install 拿真实 token 文案（no-store）
+  try {
+    const r = await fetch(`${API_BASE}/agent/install`, {
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (r.status === 401) {
+      buttons.forEach((btn) => { btn.disabled = true; btn.textContent = '会话失效，请重新登录'; });
+      return;
+    }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      buttons.forEach((btn) => { btn.disabled = true; btn.textContent = data.error || '安装指令不可用' });
+      return;
+    }
+    const data = await r.json();
+    state.agentInstall = data;
+    buttons.forEach((btn) => {
+      btn.disabled = false;
+      btn.textContent = '一键复制安装指令';
+      const client = btn.dataset.client;
+      btn.onclick = () => copyAgentCommand(client, btn);
+    });
+  } catch (e) {
+    buttons.forEach((btn) => { btn.disabled = true; btn.textContent = '读取安装指令失败' });
+    console.error('loadAgentInstallCommands failed:', e);
+  }
+}
+
+function buildAgentCommand(client) {
+  // 真实 token 必须来自 /api/agent/install（登录后动态生成）；
+  // 不在静态文件中拼装，不在 DOM 中伪造 token。
+  const install = state.agentInstall;
+  if (!install) return '';
+  if (client === 'codex') return install.codex || '';
+  if (client === 'cursor') return install.cursor || '';
+  return install.generic || '';
+}
+
+async function copyAgentCommand(client, btn) {
+  if (!state.agentInstall) return;
+  const cmd = buildAgentCommand(client);
+  if (!cmd) return;
+  const hint = document.querySelector(`.agent-copy-hint[data-client="${client}"]`);
+  try {
+    await navigator.clipboard.writeText(cmd);
+    if (hint) hint.textContent = '已复制到剪贴板。粘贴到终端执行，Codex/Cursor 会使用本会话的 Bearer Token。';
+  } catch {
+    if (hint) {
+      hint.textContent = '浏览器阻止了剪贴板，请手动复制下方指令：';
+      const pre = document.createElement('pre');
+      pre.className = 'agent-cmd-fallback';
+      pre.textContent = cmd;
+      hint.after(pre);
+    }
+  }
 }
 
 // ========== 甘特图控制 ==========

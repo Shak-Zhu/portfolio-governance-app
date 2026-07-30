@@ -1,7 +1,12 @@
-// Cloudflare Worker 主入口
+// Cloudflare Worker 主入口（WP-006：单用户 Bearer MCP + Hono defaultHandler）
+// - /mcp: 官方 createMcpHandler(McpServer + Zod)，前置 Bearer 中间件校验 SHAK_PMO_MCP_TOKEN。
+//         无 Cookie；缺失/错误 Bearer → JSON 401；正确 → 进入 createMcpHandler。
+//         actor 固定为 mcp:shak-pmo-owner，绝不读取入参 actor/scope/email。
+//         不实现 OAuth、不创建 KV、不暴露 .well-known/oauth-*。
+// - 其他 URL: 交给 Hono 处理（会话登录页、/api/auth/*、既有业务 API、Agent 安装接口、静态资源）。
+import { createMcpHandler } from 'agents/mcp/server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
 import type { D1Database, R2Bucket, Fetcher } from '@cloudflare/workers-types';
 
 import * as portfolios from './api/portfolios';
@@ -11,175 +16,484 @@ import * as stages from './api/stages';
 import * as audit from './api/audit';
 import * as projectLinks from './api/projectLinks';
 import { buildGanttData } from './lib/gantt';
+import { AGENT_CONFIG } from './mcp/config';
+import { createMcpServerFactory, MCP_ACTOR } from './mcp/server-sdk';
+import {
+  buildLogoutCookie,
+  buildSessionCookie,
+  issueSession,
+  parseCookies,
+  SESSION_COOKIE_NAME,
+  verifyLoginCredentials,
+  verifySession,
+} from './auth';
 
+// ==================== Worker Env ====================
 interface Env {
   DB: D1Database;
   BACKUPS: R2Bucket;
   ASSETS: Fetcher;
+  SHAK_PMO_WEB_LOGIN_EMAIL?: string;
+  SHAK_PMO_WEB_LOGIN_PASSWORD?: string;
+  SHAK_PMO_SESSION_SECRET?: string;
+  SHAK_PMO_MCP_TOKEN?: string;
+  // Node compat 需要
 }
 
-const app = new Hono<{ Bindings: Env }>();
+// ==================== Constants ====================
+// 这些路径在网页登录保护中是公开的；其它路径都要求 Session Cookie。
+const PUBLIC_WEB_PATHS = new Set([
+  '/login',
+  '/login.html',
+  '/api/auth/login',
+  '/api/auth/logout',
+  '/api/health',
+  '/api/agent/config',
+  '/mcp',
+]);
+// 静态资源（login 页本身依赖）公开；其它 HTML 必须经过登录保护。
+const PUBLIC_STATIC_EXTENSIONS = ['.js', '.css', '.png', '.svg', '.ico', '.map'];
+const PUBLIC_STATIC_PREFIXES = ['/agent/'];
 
-// 中间件
-app.use('*', logger());
+const BEARER_UNAUTHORIZED = (reason: string) =>
+  new Response(JSON.stringify({
+    jsonrpc: '2.0',
+    id: null,
+    error: { code: -32001, message: 'Unauthorized', data: { reason } },
+  }), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer realm="shak-pmo-mcp"' },
+  });
+
+// ==================== MCP Authorization Middleware ====================
+// 在 Hono 之前拦截 POST /mcp；返回标准 JSON 401；正确 Bearer 放行官方 handler。
+async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (request.method !== 'POST' && request.method !== 'OPTIONS') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+
+  // CORS preflight 直接放行
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
+
+  const auth = request.headers.get('Authorization') || request.headers.get('authorization');
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return BEARER_UNAUTHORIZED('Missing Authorization: Bearer');
+  }
+  const presented = auth.slice(7).trim();
+  const expected = (env.SHAK_PMO_MCP_TOKEN || '').trim();
+  if (!expected) {
+    return BEARER_UNAUTHORIZED('Server bearer token not configured');
+  }
+  // 时序安全等长比较：长度不同直接 fail
+  if (presented.length !== expected.length) {
+    return BEARER_UNAUTHORIZED('Invalid bearer token');
+  }
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ presented.charCodeAt(i);
+  }
+  if (diff !== 0) {
+    return BEARER_UNAUTHORIZED('Invalid bearer token');
+  }
+
+  // 正确 Bearer：交给官方 createMcpHandler（agents/mcp）。每次请求调用 createServer
+  // factory，返回全新的 McpServer 实例。
+  const serverCtx = { db: env.DB, auth: { actor: MCP_ACTOR as typeof MCP_ACTOR } };
+  try {
+    return await createMcpHandler(createMcpServerFactory(serverCtx), {
+      route: '/mcp',
+      allowedHostnames: ['pmo.pmoforms.com', 'localhost', '127.0.0.1'],
+      allowedOriginHostnames: ['pmo.pmoforms.com', 'localhost', '127.0.0.1'],
+      corsOptions: {
+        origin: '*',
+        methods: 'POST, OPTIONS',
+        headers: 'Content-Type, Authorization',
+        maxAge: 86400,
+      },
+      onerror: (err: unknown) => {
+        const e = err as { stack?: string; message?: string } | undefined;
+        // 原始 SDK 错误写到 console；不返回原始堆栈给客户端
+        console.error('[mcp-handler]', e?.stack || e?.message || String(err));
+      },
+    }).fetch(request, env, ctx);
+  } catch (e) {
+    console.error('[mcp-handler]', (e as Error)?.stack || (e as Error)?.message);
+    return BEARER_UNAUTHORIZED('MCP handler failure');
+  }
+}
+
+// ==================== Hono App（defaultHandler） ====================
+const app = new Hono<{ Bindings: Env; Variables: { session: { sub: string } | null } }>();
+
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// 通用错误处理
 function handleError(error: unknown): Response {
   const message = error instanceof Error ? error.message : '未知错误';
   console.error('API Error:', message);
   return Response.json({ error: message }, { status: 500 });
 }
 
-// ========== 组合 API ==========
+// 公共安全头：防止把响应缓存到共享代理（重要的页面登出 / 安全响应）
+function noStoreHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { 'Cache-Control': 'no-store', 'Pragma': 'no-cache', ...extra };
+}
 
-// GET /api/portfolios - 列出所有组合
-app.get('/api/portfolios', async (c) => {
-  try {
-    const results = await portfolios.listPortfolios(c.env.DB);
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+// ==================== 健康检查（公共） ====================
+app.get('/api/health', (c) => {
+  return Response.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// GET /api/portfolios/:id - 获取单个组合
+// ==================== /api/agent/config（公共可读；不含 secret） ====================
+app.get('/api/agent/config', (c) => {
+  const origin = new URL(c.req.url).origin;
+  const bearerConfigured = !!c.env.SHAK_PMO_MCP_TOKEN;
+  return Response.json({
+    mcpName: AGENT_CONFIG.mcpName,
+    systemName: AGENT_CONFIG.systemName,
+    mcpUrl: AGENT_CONFIG.mcpUrl,
+    manifestUrl: AGENT_CONFIG.manifestUrl,
+    skillVersion: AGENT_CONFIG.skillVersion,
+    serverVersion: AGENT_CONFIG.serverVersion,
+    toolProtocolVersion: AGENT_CONFIG.toolProtocolVersion,
+    files: AGENT_CONFIG.files,
+    auth: {
+      mode: 'bearer',
+      header: 'Authorization: Bearer <token>',
+      configured: bearerConfigured,
+    },
+    localMcpUrl: `${origin}/mcp`,
+  });
+});
+
+// ==================== Auth：登录 / 登出 / 会话状态 ====================
+app.post('/api/auth/login', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { email?: string; password?: string };
+  const email = body.email || '';
+  const password = body.password || '';
+  if (!email || !password) {
+    return Response.json({ error: '邮箱和密码不能为空' }, { status: 400, headers: noStoreHeaders() });
+  }
+  const result = await verifyLoginCredentials(c.env, email, password);
+  if (!result.ok) {
+    return Response.json({ error: result.reason }, { status: 401, headers: noStoreHeaders() });
+  }
+  if (!c.env.SHAK_PMO_SESSION_SECRET) {
+    return Response.json({ error: '服务未配置 Session 密钥' }, { status: 500, headers: noStoreHeaders() });
+  }
+  const token = await issueSessionImpl(c.env.SHAK_PMO_SESSION_SECRET, result.sub);
+  const cookie = buildSessionCookie(token, c.req.url.startsWith('https://'));
+  return Response.json({ ok: true, sub: result.sub }, { status: 200, headers: { ...noStoreHeaders(), 'Set-Cookie': cookie } });
+});
+
+app.post('/api/auth/logout', (c) => {
+  const cookie = buildLogoutCookie(c.req.url.startsWith('https://'));
+  return Response.json({ ok: true }, { status: 200, headers: { ...noStoreHeaders(), 'Set-Cookie': cookie } });
+});
+
+app.get('/api/auth/session', async (c) => {
+  const secure = c.req.url.startsWith('https://');
+  const cookies = parseCookies(c.req.header('Cookie'));
+  const token = cookies[SESSION_COOKIE_NAME];
+  const session = c.env.SHAK_PMO_SESSION_SECRET
+    ? await verifySession(c.env.SHAK_PMO_SESSION_SECRET, token)
+    : null;
+  if (!session) {
+    return Response.json({ authenticated: false }, { status: 401, headers: noStoreHeaders() });
+  }
+  return Response.json({
+    authenticated: true,
+    sub: session.sub,
+    expiresAt: session.exp,
+  }, { headers: noStoreHeaders() });
+});
+
+// 复用的签发函数（包在 index 内避免改 import 结构）
+function issueSessionImpl(secret: string, sub: string): Promise<string> {
+  return issueSession(secret, sub);
+}
+
+// ==================== 会话中间件：保护业务 API 与接入中心 ====================
+async function authenticateSession(c: { env: Env; req: { header: (k: string) => string | undefined }; set: (k: string, v: unknown) => void }, path: string): Promise<{ sub: string } | null> {
+  if (!c.env.SHAK_PMO_SESSION_SECRET) {
+    return null;
+  }
+  const cookies = parseCookies(c.req.header('Cookie'));
+  const token = cookies[SESSION_COOKIE_NAME];
+  const session = await verifySession(c.env.SHAK_PMO_SESSION_SECRET, token);
+  if (!session) return null;
+  c.set('session', { sub: session.sub });
+  return { sub: session.sub };
+}
+
+app.use('/api/*', async (c, next) => {
+  const url = new URL(c.req.url);
+  if (
+    url.pathname === '/api/health' ||
+    url.pathname === '/api/auth/login' ||
+    url.pathname === '/api/auth/logout' ||
+    url.pathname === '/api/auth/session' ||
+    url.pathname === '/api/agent/config' ||
+    url.pathname === '/api/agent/install'
+  ) {
+    // /api/agent/install 在路由处理器内部再校验；其它都是公开端点。
+    await next();
+    return;
+  }
+  const session = await authenticateSession(c, url.pathname);
+  if (!session) {
+    return Response.json({ error: '未登录' }, { status: 401, headers: noStoreHeaders() });
+  }
+  await next();
+});
+
+// 网页 HTML 保护：未登录的浏览器 GET HTML 跳 /login。
+// 静态资源（.js/.css/.png 等）、login 页面本身、/agent/* 公开。
+app.use('*', async (c, next) => {
+  const url = new URL(c.req.url);
+  const path = url.pathname;
+
+  // 已确认公开：直接放行
+  if (PUBLIC_WEB_PATHS.has(path)) {
+    await next();
+    return;
+  }
+  // 静态资源前缀
+  if (PUBLIC_STATIC_PREFIXES.some((p) => path.startsWith(p))) {
+    await next();
+    return;
+  }
+  // 静态资源扩展
+  if (PUBLIC_STATIC_EXTENSIONS.some((ext) => path.endsWith(ext))) {
+    await next();
+    return;
+  }
+
+  // 业务 HTML / 根路径必须登录：检测 Session
+  // 非 GET 请求或路径不在网页范围（如 /mcp）已经走其它分支，这里仅处理 GET 网页 HTML。
+  if (c.req.method !== 'GET') {
+    await next();
+    return;
+  }
+  // 只对根路径 / HTML / 其它无后缀路径做 HTML 保护
+  const isHtmlCandidate =
+    path === '/' ||
+    path.endsWith('.html') ||
+    (!path.includes('.') && !path.startsWith('/api/') && !path.startsWith('/mcp'));
+  if (!isHtmlCandidate) {
+    await next();
+    return;
+  }
+
+  if (!c.env.SHAK_PMO_SESSION_SECRET) {
+    // 服务端未配置：拒绝暴露主页面。
+    return new Response('Service session secret not configured', {
+      status: 503,
+      headers: noStoreHeaders(),
+    });
+  }
+  const session = await authenticateSession(c, path);
+  if (!session) {
+    // 未登录 → 302 到 /login（保留 next 参数以便登录后回跳）
+    const target = encodeURIComponent(path + url.search);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        ...noStoreHeaders(),
+        Location: `/login?next=${target}`,
+      },
+    });
+  }
+  await next();
+});
+
+// ==================== /api/agent/install（动态安装指令） ====================
+app.get('/api/agent/install', async (c) => {
+  // 强制要求会话有效
+  const cookies = parseCookies(c.req.header('Cookie'));
+  const token = cookies[SESSION_COOKIE_NAME];
+  const session = c.env.SHAK_PMO_SESSION_SECRET
+    ? await verifySession(c.env.SHAK_PMO_SESSION_SECRET, token)
+    : null;
+  if (!session) {
+    return Response.json({ error: '未登录' }, { status: 401, headers: noStoreHeaders() });
+  }
+  const mcpToken = c.env.SHAK_PMO_MCP_TOKEN;
+  if (!mcpToken) {
+    return Response.json({ error: '服务未配置 MCP Token' }, { status: 503, headers: noStoreHeaders() });
+  }
+  const mcpUrl = AGENT_CONFIG.mcpUrl;
+  const skillUrl = AGENT_CONFIG.files.skill.url;
+  const ruleUrl = AGENT_CONFIG.files.rule.url;
+  const manifestUrl = AGENT_CONFIG.manifestUrl;
+  const mcpName = AGENT_CONFIG.mcpName;
+
+  // Codex CLI 实际支持的 flag 只有 --bearer-token-env-var，
+  // 因此文案必须先 setenv（macOS 用 launchctl setenv；其它平台导出后启动 Codex Desktop），
+  // 再用 --bearer-token-env-var 引用环境变量名，最后提示完全退出/重开 Codex Desktop
+  // （Codex Desktop 不会自动重新加载 setenv）。
+  const codex = `# Shak 项目组合治理系统 · Codex 接入（Bearer Token, 安全合并，不覆盖已有配置）
+# MCP 名称 : ${mcpName}
+# MCP URL  : ${mcpUrl}
+# 说明    : Codex CLI 仅支持 --bearer-token-env-var；Token 写入环境变量再引用。
+#           setenv 后必须【完全退出 Codex Desktop 并重开】，新的 MCP 会话才会读到 Token。
+#
+# 1) 把 Bearer Token 写入当前登录会话的环境变量（macOS GUI 持久；终端瞬时）
+launchctl setenv SHAK_PMO_MCP_TOKEN "${mcpToken}"
+export SHAK_PMO_MCP_TOKEN="${mcpToken}"
+#
+# 2) 注册 MCP（官方 Streamable HTTP + Bearer Header via env var）
+codex mcp add ${mcpName} --url ${mcpUrl} --bearer-token-env-var SHAK_PMO_MCP_TOKEN
+#
+# 3) 安装 Skill（下载完整 bundle，由 Codex 加载到 ~/.codex/skills/${mcpName}/）
+mkdir -p "$HOME/.codex/skills/${mcpName}"
+# Skill 入口
+curl -fsSL "${skillUrl}" -o "$HOME/.codex/skills/${mcpName}/SKILL.md"
+# Skill 完整 bundle：references + agents/openai.yaml + manifest
+curl -fsSL "${manifestUrl}" -o "$HOME/.codex/skills/${mcpName}/manifest.json"
+mkdir -p "$HOME/.codex/skills/${mcpName}/references"
+curl -fsSL "${skillUrl.replace('/SKILL.md', '/references/tool-contract.md')}" -o "$HOME/.codex/skills/${mcpName}/references/tool-contract.md"
+curl -fsSL "${skillUrl.replace('/SKILL.md', '/references/governance-rules.md')}" -o "$HOME/.codex/skills/${mcpName}/references/governance-rules.md"
+mkdir -p "$HOME/.codex/skills/${mcpName}/agents"
+curl -fsSL "${skillUrl.replace('/SKILL.md', '/agents/openai.yaml')}" -o "$HOME/.codex/skills/${mcpName}/agents/openai.yaml"
+#
+# 4) 验证
+codex mcp list
+# 完全退出 Codex Desktop 并重开 → 在 Codex 中调用 get_capabilities：
+#   确认 toolCount=31、auth.mode=bearer、skillVersion 与 manifest 一致。
+echo "manifest: ${manifestUrl}"
+echo "skill   : ${skillUrl}"`;
+
+  const cursor = `# Shak 项目组合治理系统 · Cursor 接入（Bearer Token, 安全合并 ~/.cursor/mcp.json，不覆盖已有 MCP）
+python3 - <<'PY'
+import json, os, urllib.request
+home = os.path.expanduser("~")
+cfg_path = os.path.join(home, ".cursor", "mcp.json")
+os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+data = {}
+if os.path.exists(cfg_path):
+    with open(cfg_path) as f:
+        try: data = json.load(f)
+        except Exception: data = {}
+servers = data.setdefault("mcpServers", {})
+# 只新增/更新本 MCP，保留其它所有已有 server
+servers["${mcpName}"] = {"url": "${mcpUrl}", "headers": {"Authorization": "Bearer ${mcpToken}"}}
+with open(cfg_path, "w") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+print("已安全合并到", cfg_path)
+# 安装 Cursor Rule (.mdc)
+rule_dir = os.path.join(home, ".cursor", "rules")
+os.makedirs(rule_dir, exist_ok=True)
+urllib.request.urlretrieve("${ruleUrl}", os.path.join(rule_dir, "${mcpName}.mdc"))
+print("已安装 Rule:", os.path.join(rule_dir, "${mcpName}.mdc"))
+PY
+# 在 Cursor 中打开 MCP 设置，完成本 MCP 接入（Bearer Header 由上述配置提供）。
+# 然后运行 tools/list 做工具发现，并调用 get_capabilities 校验 skillVersion。
+# 说明：Cursor 使用 .cursor/rules/*.mdc，不会原生读取 Codex 的 SKILL.md。
+echo "manifest: ${manifestUrl}"`;
+
+  const generic = `# Shak 项目组合治理系统 · 通用 MCP Client 接入（标准 Streamable HTTP + Bearer Token）
+# MCP 名称 : ${mcpName}
+# MCP URL  : ${mcpUrl}
+# 鉴权    : Authorization: Bearer ${mcpToken}
+# 验证步骤:
+#   1) 用 MCP Inspector 验证：npx @modelcontextprotocol/inspector
+#   2) 在 Inspector 填入 MCP URL（Streamable HTTP），在 Headers 加 Authorization: Bearer ${mcpToken}
+#   3) 调用 tools/list 做工具发现
+#   4) 调用 get_capabilities，确认 skillVersion 与 manifest 一致：
+#      ${manifestUrl}
+# Skill 文档 : ${skillUrl}
+# Rule 文档  : ${ruleUrl}`;
+
+  return Response.json(
+    { codex, cursor, generic },
+    { status: 200, headers: noStoreHeaders() }
+  );
+});
+
+// ==================== 既有业务 API（来自 src/api/） ====================
+// 这些路由已经在 WP-002A/WP-005 实现并验证；这里保留路径与语义，由 Hono 转发。
+// 内部仍使用业务库，无任何硬编码 actor；网页前端不传 actor（默认 'user'）。
+
+// 组合
+app.get('/api/portfolios', async (c) => {
+  try { return Response.json(await portfolios.listPortfolios(c.env.DB)); }
+  catch (e) { return handleError(e); }
+});
 app.get('/api/portfolios/:id', async (c) => {
   try {
-    const portfolio = await portfolios.getPortfolio(c.env.DB, c.req.param('id'));
-    if (!portfolio) {
-      return Response.json({ error: '组合不存在' }, { status: 404 });
-    }
-    return Response.json(portfolio);
-  } catch (e) {
-    return handleError(e);
-  }
+    const p = await portfolios.getPortfolio(c.env.DB, c.req.param('id'));
+    return p ? Response.json(p) : Response.json({ error: '组合不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
-
-// POST /api/portfolios - 创建组合
 app.post('/api/portfolios', async (c) => {
   try {
-    const body = await c.req.json<{ name: string; description?: string; actor?: string }>();
-    const actor = body.actor || 'user';
-    const { name, description } = body;
-    
-    if (!name) {
-      return Response.json({ error: '组合名称不能为空' }, { status: 400 });
-    }
-    
-    const portfolio = await portfolios.createPortfolio(c.env.DB, { name, description }, actor);
-    return Response.json(portfolio, { status: 201 });
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as { name?: string; description?: string };
+    if (!body.name) return Response.json({ error: '组合名称不能为空' }, { status: 400 });
+    const p = await portfolios.createPortfolio(c.env.DB, { name: body.name, description: body.description }, 'user');
+    return Response.json(p, { status: 201 });
+  } catch (e) { return handleError(e); }
 });
-
-// PUT /api/portfolios/:id - 更新组合
 app.put('/api/portfolios/:id', async (c) => {
   try {
-    const body = await c.req.json<{ name?: string; description?: string; actor?: string }>();
-    const actor = body.actor || 'user';
-    const portfolio = await portfolios.updatePortfolio(c.env.DB, c.req.param('id'), body, actor);
-    
-    if (!portfolio) {
-      return Response.json({ error: '组合不存在' }, { status: 404 });
-    }
-    return Response.json(portfolio);
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as { name?: string; description?: string };
+    const p = await portfolios.updatePortfolio(c.env.DB, c.req.param('id'), body, 'user');
+    return p ? Response.json(p) : Response.json({ error: '组合不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
-
-// DELETE /api/portfolios/:id - 删除组合
 app.delete('/api/portfolios/:id', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const success = await portfolios.deletePortfolio(c.env.DB, c.req.param('id'), actor);
-    
-    if (!success) {
-      return Response.json({ error: '组合不存在' }, { status: 404 });
-    }
-    return Response.json({ success: true });
-  } catch (e) {
-    return handleError(e);
-  }
+    const ok = await portfolios.deletePortfolio(c.env.DB, c.req.param('id'), 'user');
+    return ok ? Response.json({ success: true }) : Response.json({ error: '组合不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
 
-// ========== 项目 API ==========
-
-// GET /api/portfolios/:portfolioId/projects - 列出组合下的项目
+// 项目
 app.get('/api/portfolios/:portfolioId/projects', async (c) => {
   try {
-    const includeArchived = c.req.query('includeArchived') === 'true';
-    const results = await projects.listProjects(c.env.DB, c.req.param('portfolioId'), includeArchived);
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+    const inc = c.req.query('includeArchived') === 'true';
+    return Response.json(await projects.listProjects(c.env.DB, c.req.param('portfolioId'), inc));
+  } catch (e) { return handleError(e); }
 });
-
-// GET /api/projects/:id - 获取单个项目
 app.get('/api/projects/:id', async (c) => {
   try {
-    const project = await projects.getProject(c.env.DB, c.req.param('id'));
-    if (!project) {
-      return Response.json({ error: '项目不存在' }, { status: 404 });
-    }
-    return Response.json(project);
-  } catch (e) {
-    return handleError(e);
-  }
+    const p = await projects.getProject(c.env.DB, c.req.param('id'));
+    return p ? Response.json(p) : Response.json({ error: '项目不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
-
-// POST /api/portfolios/:portfolioId/projects - 创建项目
 app.post('/api/portfolios/:portfolioId/projects', async (c) => {
   try {
     const portfolioId = c.req.param('portfolioId');
-    const body = await c.req.json();
-    const actor = body.actor || 'user';
-    
-    if (!body.title || !body.owner) {
-      return Response.json({ error: '标题和负责人不能为空' }, { status: 400 });
-    }
-    
-    const project = await projects.createProject(c.env.DB, portfolioId, body, actor);
-    return Response.json(project, { status: 201 });
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    if (!body.title || !body.owner) return Response.json({ error: '标题和负责人不能为空' }, { status: 400 });
+    const created = await projects.createProject(c.env.DB, portfolioId, body as never, 'user');
+    return Response.json(created, { status: 201 });
+  } catch (e) { return handleError(e); }
 });
-
-// PUT /api/projects/:id - 更新项目
 app.put('/api/projects/:id', async (c) => {
   try {
-    const body = await c.req.json();
-    const actor = body.actor || 'user';
-    const project = await projects.updateProject(c.env.DB, c.req.param('id'), body, actor);
-    
-    if (!project) {
-      return Response.json({ error: '项目不存在' }, { status: 404 });
-    }
-    return Response.json(project);
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const updated = await projects.updateProject(c.env.DB, c.req.param('id'), body as never, 'user');
+    return updated ? Response.json(updated) : Response.json({ error: '项目不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
-
-// DELETE /api/projects/:id - 删除项目
 app.delete('/api/projects/:id', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const success = await projects.deleteProject(c.env.DB, c.req.param('id'), actor);
-    
-    if (!success) {
-      return Response.json({ error: '项目不存在' }, { status: 404 });
-    }
+    const ok = await projects.deleteProject(c.env.DB, c.req.param('id'), 'user');
+    if (!ok) return Response.json({ error: '项目不存在' }, { status: 404 });
     return Response.json({ success: true });
   } catch (e) {
     if (e instanceof Error && e.message.includes('子项目')) {
@@ -188,81 +502,38 @@ app.delete('/api/projects/:id', async (c) => {
     return handleError(e);
   }
 });
-
-// POST /api/projects/:id/complete - 标记完成
 app.post('/api/projects/:id/complete', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const project = await projects.completeProject(c.env.DB, c.req.param('id'), actor);
-    
-    if (!project) {
-      return Response.json({ error: '项目不存在' }, { status: 404 });
-    }
-    return Response.json(project);
-  } catch (e) {
-    return handleError(e);
-  }
+    const p = await projects.completeProject(c.env.DB, c.req.param('id'), 'user');
+    return p ? Response.json(p) : Response.json({ error: '项目不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
-
-// POST /api/projects/:id/archive - 归档项目
 app.post('/api/projects/:id/archive', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const result = await projects.archiveProject(c.env.DB, c.req.param('id'), actor);
-    
+    const result = await projects.archiveProject(c.env.DB, c.req.param('id'), 'user');
     return Response.json(result, { status: result.success ? 200 : 400 });
-  } catch (e) {
-    return handleError(e);
-  }
+  } catch (e) { return handleError(e); }
 });
-
-// GET /api/portfolios/:portfolioId/stats - 获取统计
 app.get('/api/portfolios/:portfolioId/stats', async (c) => {
-  try {
-    const stats = await projects.getProjectStats(c.env.DB, c.req.param('portfolioId'));
-    return Response.json(stats);
-  } catch (e) {
-    return handleError(e);
-  }
+  try { return Response.json(await projects.getProjectStats(c.env.DB, c.req.param('portfolioId'))); }
+  catch (e) { return handleError(e); }
 });
 
-// ========== 步骤 API ==========
-
-// GET /api/projects/:projectId/steps - 获取项目的步骤
+// 步骤
 app.get('/api/projects/:projectId/steps', async (c) => {
-  try {
-    const results = await steps.listSteps(c.env.DB, c.req.param('projectId'));
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+  try { return Response.json(await steps.listSteps(c.env.DB, c.req.param('projectId'))); }
+  catch (e) { return handleError(e); }
 });
-
-// GET /api/portfolios/:portfolioId/steps - 获取组合下所有步骤
 app.get('/api/portfolios/:portfolioId/steps', async (c) => {
-  try {
-    const results = await steps.listAllSteps(c.env.DB, c.req.param('portfolioId'));
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+  try { return Response.json(await steps.listAllSteps(c.env.DB, c.req.param('portfolioId'))); }
+  catch (e) { return handleError(e); }
 });
-
-// POST /api/projects/:projectId/steps - 创建步骤
 app.post('/api/projects/:projectId/steps', async (c) => {
   try {
-    const projectId = c.req.param('projectId');
-    const body = await c.req.json();
-    const actor = body.actor || 'user';
-    
-    if (!body.name) {
-      return Response.json({ error: '步骤名称不能为空' }, { status: 400 });
-    }
-    
-    const step = await steps.createStep(c.env.DB, projectId, body, actor);
-    return Response.json(step, { status: 201 });
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    if (!body.name) return Response.json({ error: '步骤名称不能为空' }, { status: 400 });
+    const s = await steps.createStep(c.env.DB, c.req.param('projectId'), body as never, 'user');
+    return Response.json(s, { status: 201 });
   } catch (e) {
     if (e instanceof Error && e.message.includes('不存在')) {
       return Response.json({ error: e.message }, { status: 404 });
@@ -270,250 +541,168 @@ app.post('/api/projects/:projectId/steps', async (c) => {
     return handleError(e);
   }
 });
-
-// PUT /api/steps/:id - 更新步骤
 app.put('/api/steps/:id', async (c) => {
   try {
-    const body = await c.req.json();
-    const actor = body.actor || 'user';
-    const step = await steps.updateStep(c.env.DB, c.req.param('id'), body, actor);
-    
-    if (!step) {
-      return Response.json({ error: '步骤不存在' }, { status: 404 });
-    }
-    return Response.json(step);
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const s = await steps.updateStep(c.env.DB, c.req.param('id'), body as never, 'user');
+    return s ? Response.json(s) : Response.json({ error: '步骤不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
-
-// DELETE /api/steps/:id - 删除步骤
 app.delete('/api/steps/:id', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const success = await steps.deleteStep(c.env.DB, c.req.param('id'), actor);
-    
-    if (!success) {
-      return Response.json({ error: '步骤不存在' }, { status: 404 });
-    }
-    return Response.json({ success: true });
-  } catch (e) {
-    return handleError(e);
-  }
+    const ok = await steps.deleteStep(c.env.DB, c.req.param('id'), 'user');
+    return ok ? Response.json({ success: true }) : Response.json({ error: '步骤不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
 
-// ========== Stage API ==========
-
-// GET /api/portfolios/:portfolioId/stages - 获取组合的 Stage
+// Stage
 app.get('/api/portfolios/:portfolioId/stages', async (c) => {
-  try {
-    const results = await stages.listStages(c.env.DB, c.req.param('portfolioId'));
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+  try { return Response.json(await stages.listStages(c.env.DB, c.req.param('portfolioId'))); }
+  catch (e) { return handleError(e); }
 });
-
-// POST /api/portfolios/:portfolioId/stages - 创建 Stage
 app.post('/api/portfolios/:portfolioId/stages', async (c) => {
   try {
-    const portfolioId = c.req.param('portfolioId');
-    const body = await c.req.json<{ name: string; actor?: string }>();
-    const actor = body.actor || 'user';
-    
-    if (!body.name) {
-      return Response.json({ error: 'Stage 名称不能为空' }, { status: 400 });
-    }
-    
-    const stage = await stages.createStage(c.env.DB, portfolioId, { name: body.name }, actor);
-    return Response.json(stage, { status: 201 });
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as { name?: string };
+    if (!body.name) return Response.json({ error: 'Stage 名称不能为空' }, { status: 400 });
+    const s = await stages.createStage(c.env.DB, c.req.param('portfolioId'), { name: body.name }, 'user');
+    return Response.json(s, { status: 201 });
+  } catch (e) { return handleError(e); }
 });
-
-// PUT /api/stages/:id - 更新 Stage
 app.put('/api/stages/:id', async (c) => {
   try {
-    const body = await c.req.json<{ name: string; actor?: string }>();
-    const actor = body.actor || 'user';
-    const result = await stages.updateStage(c.env.DB, c.req.param('id'), body.name, actor);
-    
-    if (!result.success) {
-      return Response.json(result, { status: 400 });
-    }
-    return Response.json(result.stage);
-  } catch (e) {
-    return handleError(e);
-  }
+    const body = await c.req.json().catch(() => ({})) as { name?: string };
+    const result = await stages.updateStage(c.env.DB, c.req.param('id'), body.name || '', 'user');
+    return result.success ? Response.json(result.stage) : Response.json(result, { status: 400 });
+  } catch (e) { return handleError(e); }
 });
-
-// DELETE /api/stages/:id - 删除 Stage
 app.delete('/api/stages/:id', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const result = await stages.deleteStage(c.env.DB, c.req.param('id'), actor);
-    
+    const result = await stages.deleteStage(c.env.DB, c.req.param('id'), 'user');
     return Response.json(result, { status: result.success ? 200 : 400 });
-  } catch (e) {
-    return handleError(e);
-  }
+  } catch (e) { return handleError(e); }
 });
 
-// ========== 审计 API ==========
-
-// GET /api/portfolios/:portfolioId/audit - 获取审计事件
+// 审计
 app.get('/api/portfolios/:portfolioId/audit', async (c) => {
   try {
     const limit = parseInt(c.req.query('limit') || '50');
     const offset = parseInt(c.req.query('offset') || '0');
-    const result = await audit.listAuditEvents(c.env.DB, c.req.param('portfolioId'), limit, offset);
-    return Response.json(result);
-  } catch (e) {
-    return handleError(e);
-  }
+    return Response.json(await audit.listAuditEvents(c.env.DB, c.req.param('portfolioId'), limit, offset));
+  } catch (e) { return handleError(e); }
 });
-
-// GET /api/audit/:type/:id - 获取对象审计历史
 app.get('/api/audit/:type/:id', async (c) => {
   try {
     const limit = parseInt(c.req.query('limit') || '20');
-    const results = await audit.getAuditHistory(c.env.DB, c.req.param('type'), c.req.param('id'), limit);
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+    return Response.json(await audit.getAuditHistory(c.env.DB, c.req.param('type'), c.req.param('id'), limit));
+  } catch (e) { return handleError(e); }
 });
 
-// ========== 项目关联资料 API ==========
-
-// GET /api/projects/:projectId/links - 获取项目的关联资料
+// 项目关联资料
 app.get('/api/projects/:projectId/links', async (c) => {
-  try {
-    const results = await projectLinks.listProjectLinks(c.env.DB, c.req.param('projectId'));
-    return Response.json(results);
-  } catch (e) {
-    return handleError(e);
-  }
+  try { return Response.json(await projectLinks.listProjectLinks(c.env.DB, c.req.param('projectId'))); }
+  catch (e) { return handleError(e); }
 });
-
-// POST /api/projects/:projectId/links - 创建关联资料
 app.post('/api/projects/:projectId/links', async (c) => {
   try {
-    const projectId = c.req.param('projectId');
-    const body = await c.req.json<{ title: string; url: string; actor?: string }>();
-    const actor = body.actor || 'user';
-    
-    if (!body.title || !body.url) {
-      return Response.json({ error: '标题和 URL 不能为空' }, { status: 400 });
-    }
-    
-    const link = await projectLinks.createProjectLink(c.env.DB, projectId, body, actor);
+    const body = await c.req.json().catch(() => ({})) as { title?: string; url?: string };
+    if (!body.title || !body.url) return Response.json({ error: '标题和 URL 不能为空' }, { status: 400 });
+    const link = await projectLinks.createProjectLink(c.env.DB, c.req.param('projectId'), body, 'user');
     return Response.json(link, { status: 201 });
   } catch (e) {
     if (e instanceof Error) {
-      if (e.message.includes('不存在')) {
-        return Response.json({ error: e.message }, { status: 404 });
-      }
-      if (e.message.includes('http')) {
-        return Response.json({ error: e.message }, { status: 400 });
-      }
+      if (e.message.includes('不存在')) return Response.json({ error: e.message }, { status: 404 });
+      if (e.message.includes('http')) return Response.json({ error: e.message }, { status: 400 });
     }
     return handleError(e);
   }
 });
-
-// PUT /api/links/:id - 更新关联资料
 app.put('/api/links/:id', async (c) => {
   try {
-    const body = await c.req.json<{ title?: string; url?: string; actor?: string }>();
-    const actor = body.actor || 'user';
-    const link = await projectLinks.updateProjectLink(c.env.DB, c.req.param('id'), body, actor);
-    
-    if (!link) {
-      return Response.json({ error: '关联资料不存在' }, { status: 404 });
-    }
-    return Response.json(link);
+    const body = await c.req.json().catch(() => ({})) as { title?: string; url?: string };
+    const link = await projectLinks.updateProjectLink(c.env.DB, c.req.param('id'), body, 'user');
+    return link ? Response.json(link) : Response.json({ error: '关联资料不存在' }, { status: 404 });
   } catch (e) {
-    if (e instanceof Error && e.message.includes('http')) {
-      return Response.json({ error: e.message }, { status: 400 });
-    }
+    if (e instanceof Error && e.message.includes('http')) return Response.json({ error: e.message }, { status: 400 });
     return handleError(e);
   }
 });
-
-// DELETE /api/links/:id - 删除关联资料
 app.delete('/api/links/:id', async (c) => {
   try {
-    const body = await c.req.json<{ actor?: string }>();
-    const actor = body.actor || 'user';
-    const success = await projectLinks.deleteProjectLink(c.env.DB, c.req.param('id'), actor);
-    
-    if (!success) {
-      return Response.json({ error: '关联资料不存在' }, { status: 404 });
-    }
-    return Response.json({ success: true });
-  } catch (e) {
-    return handleError(e);
-  }
+    const ok = await projectLinks.deleteProjectLink(c.env.DB, c.req.param('id'), 'user');
+    return ok ? Response.json({ success: true }) : Response.json({ error: '关联资料不存在' }, { status: 404 });
+  } catch (e) { return handleError(e); }
 });
 
-// ========== 甘特图 API ==========
-
-// GET /api/portfolios/:portfolioId/gantt - 获取甘特图数据
+// 甘特图
 app.get('/api/portfolios/:portfolioId/gantt', async (c) => {
   try {
     const portfolioId = c.req.param('portfolioId');
-    const start = c.req.query('start') || getDefaultStartDate();
-    const end = c.req.query('end') || getDefaultEndDate();
+    const start = c.req.query('start') || defaultStartDate();
+    const end = c.req.query('end') || defaultEndDate();
     const scale = (c.req.query('scale') || 'week') as 'day' | 'week' | 'month';
-    
-    const projectsList = await projects.listProjects(c.env.DB, portfolioId, false);
-    const allSteps = await steps.listAllSteps(c.env.DB, portfolioId);
-    
-    // buildGanttData 内部按真实 timeline 单元格计算条形，并分离未排期步骤
-    const ganttData = buildGanttData(projectsList, allSteps, start, end, scale);
-    
-    return Response.json(ganttData);
-  } catch (e) {
-    return handleError(e);
-  }
+    const ps = await projects.listProjects(c.env.DB, portfolioId, false);
+    const ss = await steps.listAllSteps(c.env.DB, portfolioId);
+    return Response.json(buildGanttData(ps, ss, start, end, scale));
+  } catch (e) { return handleError(e); }
 });
 
-function getDefaultStartDate(): string {
-  const now = new Date();
-  now.setDate(1); // 月初
-  return now.toISOString().split('T')[0];
+function defaultStartDate(): string {
+  const d = new Date();
+  d.setDate(1);
+  return d.toISOString().split('T')[0];
+}
+function defaultEndDate(): string {
+  const d = new Date();
+  d.setMonth(d.getMonth() + 3);
+  return d.toISOString().split('T')[0];
 }
 
-function getDefaultEndDate(): string {
-  const now = new Date();
-  now.setMonth(now.getMonth() + 3); // 3个月后
-  return now.toISOString().split('T')[0];
-}
-
-// ========== 健康检查 ==========
-app.get('/api/health', (c) => {
-  return Response.json({ status: 'ok', timestamp: Date.now() });
-});
-
-// 未匹配到的 /api/* 路由返回 404 JSON
+// API 兜底：未匹配的 /api/* 返回 404 JSON
 app.all('/api/*', (c) => {
-  return Response.json({ error: '接口不存在' }, { status: 404 });
+  return Response.json({ error: '接口不存在' }, { status: 404, headers: noStoreHeaders() });
 });
 
-// 静态资源：所有非 /api/* 请求转交 ASSETS 绑定
-// html_handling=none 时需手动把根路径映射到 index.html
+// 静态资源：非 /api/* 与 /mcp 请求由 env.ASSETS 提供。
+// 已登录请求直达资源；未登录请求由上面的中间件提前 302 到 /login，
+// 因此这里的兜底不再放行未鉴权访问 HTML 主页。
+// 对于 e2e 测试（用 Miniflare + 不带 ASSETS 重写），允许通过 env.SHAK_PMO_INJECT_INDEX_HTML
+// / env.SHAK_PMO_INJECT_LOGIN_HTML 直接返回静态内容兜底；生产不会设置这些 env。
+async function injectStatic(c, key, fallbackPath) {
+  try {
+    const r = await c.env.ASSETS.fetch(new Request(new URL(fallbackPath, c.req.url).toString(), c.req.raw));
+    if (r && r.ok) return r;
+  } catch {}
+  const fallback = c.env[key];
+  if (typeof fallback === 'string' && fallback.length) {
+    return new Response(fallback, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+  }
+  return new Response('Asset not available', { status: 503, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' } });
+}
+
 app.all('*', async (c) => {
   const url = new URL(c.req.url);
+  if (url.pathname === '/login' || url.pathname === '/login.html') {
+    return injectStatic(c, 'SHAK_PMO_INJECT_LOGIN_HTML', '/login.html');
+  }
   if (url.pathname === '/' || url.pathname === '') {
-    url.pathname = '/index.html';
-    return c.env.ASSETS.fetch(new Request(url.toString(), c.req.raw));
+    return injectStatic(c, 'SHAK_PMO_INJECT_INDEX_HTML', '/index.html');
   }
   return c.env.ASSETS.fetch(c.req.raw);
 });
 
-// 导出 Worker
-export default app;
+// ==================== Worker Default Export ====================
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    // /mcp 始终走 MCP 处理器，与网页登录完全分离，绝不被 Hono 拦截
+    if (url.pathname === '/mcp') {
+      return handleMcp(request, env, ctx);
+    }
+    // /agent/* 静态资产由 ASSETS 提供，无须鉴权
+    if (url.pathname.startsWith('/agent/')) {
+      return env.ASSETS.fetch(request);
+    }
+    // 其它：Hono 默认处理
+    return app.fetch(request, env, ctx);
+  },
+};

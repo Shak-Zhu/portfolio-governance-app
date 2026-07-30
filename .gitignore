@@ -9,6 +9,8 @@ dist/
 .env
 .env.*
 !.env.example
+.dev.vars
+.dev.vars.*
 
 # 日志
 *.log

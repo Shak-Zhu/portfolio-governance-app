@@ -1,0 +1,70 @@
+# Codex Skill metadata for shak-project-portfolio-governance
+# Consumed by Codex Desktop when loading the Skill bundle from
+# ~/.codex/skills/shak-project-portfolio-governance/agents/openai.yaml
+# Codes must match the MCP tool inventory.
+
+name: shak-project-portfolio-governance
+display_name: Shak 项目组合治理系统
+description: 通过官方 Bearer Token MCP 维护 Shak 项目组合治理系统的组合、项目、父子层级、步骤、Stage、关联资料、甘特、审计与归档。所有写操作走官方 MCP；禁止直写 D1 或直调私有 REST。
+version: 1.0.0
+mcp:
+  name: shak-project-portfolio-governance
+  url: https://pmo.pmoforms.com/mcp
+  transport: streamable-http
+  auth:
+    mode: bearer
+    header: Authorization
+    audience: shak-pmo-owner
+tools:
+  - list_portfolios
+  - get_portfolio
+  - create_portfolio
+  - update_portfolio
+  - delete_portfolio
+  - list_projects
+  - get_project
+  - create_project
+  - update_project
+  - delete_project
+  - complete_project
+  - archive_project
+  - get_project_stats
+  - list_steps
+  - list_portfolio_steps
+  - create_step
+  - update_step
+  - delete_step
+  - list_stages
+  - create_stage
+  - update_stage
+  - delete_stage
+  - list_project_links
+  - create_project_link
+  - update_project_link
+  - delete_project_link
+  - get_gantt
+  - list_audit_events
+  - get_object_audit
+  - list_archived_projects
+  - get_capabilities
+trigger_keywords:
+  - shak
+  - pmo
+  - 项目组合治理
+  - portfolio governance
+  - mcp
+  - mcpform
+required_files:
+  - SKILL.md
+  - references/tool-contract.md
+  - references/governance-rules.md
+  - agents/openai.yaml
+  - manifest.json
+disallowed_actions:
+  - direct D1 writes
+  - private REST calls (/api/*)
+  - browser automation
+  - arbitrary SQL/HTTP execution
+  - guessing portfolioId / projectId / stepId / stageId / linkId
+  - forging actor / scope / audience fields
+last_verified: 2026-07-29
