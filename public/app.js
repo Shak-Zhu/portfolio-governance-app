@@ -535,6 +535,18 @@ function dateToUtcMs(value) {
   return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : NaN;
 }
 
+// 用浏览器实际字体测量标题；只有确实放不下时才切换为独立标签。
+function getTaskLabelWidth(stepName) {
+  const label = String(stepName || '');
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (context) {
+    context.font = '750 10px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    return Math.ceil(context.measureText(label).width) + 16; // 两侧 padding
+  }
+  return Array.from(label).reduce((width, char) => width + (/^[\x00-\x7F]$/.test(char) ? 6 : 10), 16);
+}
+
 // 周/月格内仍按真实日期落位：例如 8/3–8/4 不会占满整个 8 月格。
 function getPreciseBarMetrics(bar, timeline, colWidth) {
   const firstCell = timeline[bar.colStart];
@@ -547,7 +559,8 @@ function getPreciseBarMetrics(bar, timeline, colWidth) {
   const endOffset = Math.max(0, Math.min(colWidth, ((lastCell.endMs + DAY_MS - endExclusiveMs) / lastCellMs) * colWidth));
   const spanWidth = (bar.colEnd - bar.colStart + 1) * colWidth;
   const durationWidth = Math.max(2, spanWidth - startOffset - endOffset);
-  return { startOffset, durationWidth, compact: durationWidth < 72 };
+  // 短任务的定义是“真实工期容不下完整标题”，而非任意固定像素阈值。
+  return { startOffset, durationWidth, compact: durationWidth < getTaskLabelWidth(bar.stepName) };
 }
 
 function renderGanttBars(bars, timeline, colWidth) {

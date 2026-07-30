@@ -275,7 +275,6 @@ button { font: inherit; border: 0; cursor: pointer; }
   gap: 5px;
   box-sizing: border-box;
   width: max-content;
-  max-width: 185px;
   height: 21px;
   padding: 3px 7px 3px 5px;
   color: #253b59;
@@ -294,7 +293,7 @@ button { font: inherit; border: 0; cursor: pointer; }
   background: #9eafc2;
 }
 .short-task-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; }
-.short-task-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.short-task-name { white-space: nowrap; }
 
 /* 依赖是治理字段，不是另一段日期条。仅在已阻塞步骤下方显示其真实前置和影响。 */
 .dependency-callout {
