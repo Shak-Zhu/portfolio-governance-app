@@ -445,6 +445,9 @@ try:
         with urllib.request.urlopen(root + "/" + urllib.parse.quote(rel)) as r: data = r.read()
         if hashlib.sha256(data).hexdigest() != meta["sha256"]: raise RuntimeError("SHA-256 mismatch: " + rel)
         with open(dest, "wb") as f: f.write(data)
+    # 保留已校验的 manifest，便于本地审计已安装 Skill 的版本和全部文件哈希。
+    with open(os.path.join(tmp, "manifest.json"), "wb") as f:
+        f.write(json.dumps(manifest, ensure_ascii=False, indent=2).encode() + b"\\n")
     bundle_dir = os.path.join(home, ".cursor", "skills", "${mcpName}")
     shutil.rmtree(bundle_dir, ignore_errors=True); os.makedirs(os.path.dirname(bundle_dir), exist_ok=True)
     shutil.move(tmp, bundle_dir); tmp = None
