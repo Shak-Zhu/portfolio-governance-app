@@ -223,14 +223,15 @@ button { font: inherit; border: 0; cursor: pointer; }
 /* 当前时间线：只是一根准确定位的参考线，不覆盖任何日期单元格。 */
 .today-marker {
   position: absolute;
-  z-index: 5;
+  /* 置于工期柱下方，作为参考而不是遮挡内容的前景元素。 */
+  z-index: 0;
   top: 0;
   bottom: 0;
   width: 2px;
   margin-left: -1px;
   pointer-events: none;
-  background: #f97316;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.68);
+  background: rgba(249, 115, 22, 0.62);
+  opacity: 0.42;
 }
 .today-marker::before {
   content: '';
@@ -241,21 +242,7 @@ button { font: inherit; border: 0; cursor: pointer; }
   height: 8px;
   border-radius: 50%;
   background: #f97316;
-  box-shadow: 0 0 0 2px #fff;
-}
-.time-header .today-marker::after {
-  content: '今天';
-  position: absolute;
-  top: 3px;
-  left: 6px;
-  padding: 1px 4px;
-  color: #fff;
-  background: #ea580c;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 14px;
-  white-space: nowrap;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7);
 }
 
 .step-track {
@@ -304,28 +291,19 @@ button { font: inherit; border: 0; cursor: pointer; }
 
 /* 短任务：色条严格代表真实工期；名称是独立的白色信息卡，不再被误读为工期。 */
 .compact-task .step-duration {
-  top: 27px;
-  height: 4px;
+  top: 4px;
+  height: 28px;
   min-width: 2px;
-  border-radius: 999px;
-  box-shadow: none;
+  border-radius: 6px;
 }
 .compact-task .step-duration::before,
 .compact-task .step-duration::after {
-  content: '';
-  position: absolute;
-  top: -2px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: inherit;
+  content: none;
 }
-.compact-task .step-duration::before { left: 0; }
-.compact-task .step-duration::after { right: 0; }
 .short-task-chip {
   position: absolute;
-  left: var(--bar-start);
-  top: 1px;
+  left: calc(var(--bar-start) + var(--bar-width) + 6px);
+  top: 5px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -342,10 +320,10 @@ button { font: inherit; border: 0; cursor: pointer; }
 .short-task-chip::after {
   content: '';
   position: absolute;
-  left: 9px;
-  top: 20px;
-  width: 1px;
-  height: 6px;
+  left: -6px;
+  top: 9px;
+  width: 6px;
+  height: 1px;
   background: #9eafc2;
 }
 .short-task-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; }

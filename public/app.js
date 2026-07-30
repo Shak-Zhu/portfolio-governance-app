@@ -455,7 +455,7 @@ function renderGantt(data) {
   const ganttBody = document.getElementById('ganttBody');
 
   // 周/月均保留主粒度，但为次级刻度留出可读空间。
-  const colWidth = state.ganttScale === 'day' ? 48 : state.ganttScale === 'week' ? 112 : 150;
+  const colWidth = state.ganttScale === 'day' ? 48 : state.ganttScale === 'week' ? 150 : 240;
   const colsCount = data.timeline.length;
   const gridTemplate = `repeat(${colsCount}, ${colWidth}px)`;
   const todayMarker = renderTodayMarker(data.timeline, colWidth);
