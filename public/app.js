@@ -10,6 +10,7 @@ let state = {
   ganttScale: 'week',
   ganttRange: { start: '', end: '' },
   collapsedProjectIds: new Set(),
+  dependencyDetailsExpanded: new Map(),
   editingSteps: {},  // 跟踪编辑中的步骤
   session: null,     // { sub, expiresAt } 或 null
   agentInstall: null, // 登录后从 /api/agent/install 获取的三段安装文案
@@ -478,7 +479,7 @@ function renderGantt(data) {
     const statusClass = p.status === 'completed' ? 'badge completed' : p.is_archived ? 'badge archived' : '';
     const statusLabel = p.is_archived ? '已归档' : p.status === 'completed' ? '已完成' : '执行中';
 
-    const barsHtml = renderGanttBars(row.bars, colsCount);
+    const barsHtml = renderGanttBars(row.bars, colsCount, colWidth);
 
     return `
       <div class="gantt-row ${level > 0 ? 'level-' + level : 'parent'}">
@@ -501,6 +502,15 @@ function renderGantt(data) {
     `;
   }).join('');
 
+  ganttBody.querySelectorAll('[data-dependency-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const stepId = button.dataset.dependencyToggle;
+      const expanded = button.getAttribute('aria-expanded') !== 'true';
+      state.dependencyDetailsExpanded.set(stepId, expanded);
+      renderGantt(data);
+    });
+  });
+
   renderUnscheduled(data.unscheduled);
 }
 
@@ -513,7 +523,7 @@ const dependencyTypeLabels = {
   external_dependency: '外部依赖',
 };
 
-function renderGanttBars(bars, colsCount) {
+function renderGanttBars(bars, colsCount, colWidth) {
   if (!bars || bars.length === 0) return '';
   let nextRow = 1;
   return bars.map((bar) => {
@@ -522,17 +532,28 @@ function renderGanttBars(bars, colsCount) {
     const dependencyDetail = (bar.dependencyDetail || '').trim();
     const blockedImpact = (bar.blockedImpact || '').trim();
     const showDependency = bar.status === 'blocked' && bar.dependencyType && bar.dependencyType !== 'none' && dependencyDetail;
+    const detailExpanded = state.dependencyDetailsExpanded.get(bar.stepId) ?? state.ganttScale !== 'month';
+    const spanWidth = (bar.colEnd - bar.colStart + 1) * colWidth;
+    let startInset = Math.round((bar.startOffset || 0) * colWidth);
+    let endInset = Math.round((1 - (bar.endOffset ?? 1)) * colWidth);
+    const minimumVisualWidth = 10;
+    if (spanWidth - startInset - endInset < minimumVisualWidth) {
+      const center = startInset + Math.max(0, (spanWidth - startInset - endInset) / 2);
+      startInset = Math.max(0, Math.round(center - minimumVisualWidth / 2));
+      endInset = Math.max(0, spanWidth - startInset - minimumVisualWidth);
+    }
     const row = nextRow++;
     const dependencyRow = showDependency ? nextRow++ : null;
     const callout = showDependency ? `
-      <div class="dependency-callout blocked"
+      <div class="dependency-callout blocked${detailExpanded ? '' : ' is-collapsed'}"
            style="grid-column: ${colStart} / -1; grid-row: ${dependencyRow};"
-           title="前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：${escapeHtml(dependencyDetail)}${blockedImpact ? `；阻塞：${escapeHtml(blockedImpact)}` : ''}">
-        <strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}
+           title="${detailExpanded ? `前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：${escapeHtml(dependencyDetail)}${blockedImpact ? `；阻塞：${escapeHtml(blockedImpact)}` : ''}` : '点击展开前置依赖说明'}">
+        <button class="dependency-toggle" type="button" data-dependency-toggle="${escapeHtml(bar.stepId)}" aria-expanded="${detailExpanded}" aria-label="${detailExpanded ? '收起' : '展开'} ${escapeHtml(bar.stepName)} 的前置依赖">${detailExpanded ? '⌃ 收起依赖' : '⌄ 展开依赖'}</button>
+        ${detailExpanded ? `<span class="dependency-detail"><strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}</span>` : ''}
       </div>` : '';
     return `
       <div class="step-bar ${escapeHtml(bar.status)}"
-           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${row};"
+           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${row}; --bar-start-inset: ${startInset}px; --bar-end-inset: ${endInset}px;"
            title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）">
         <span class="step-bar-label">${escapeHtml(bar.stepName)}</span>
       </div>

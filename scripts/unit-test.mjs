@@ -158,6 +158,18 @@ check('甘特条保留依赖字段，且不改变真实日期落位', () => {
   eq(bars[0].blockedImpact, '阻塞监控配置', '保留阻塞影响');
 });
 
+check('周视图保留格内日期位置：同周但前后分离的步骤不再误画为重叠', () => {
+  const cells = generateTimeline('2026-08-03', '2026-08-09', 'week', Date.UTC(2026, 7, 1));
+  const bars = calculateBars([
+    { id: 'early', name: '早期步骤', start_date: '2026-08-03', end_date: '2026-08-03', status: 'planned' },
+    { id: 'later', name: '后续步骤', start_date: '2026-08-06', end_date: '2026-08-06', status: 'planned' },
+  ], cells);
+  eq(bars[0].colStart, bars[1].colStart, '两项都在同一周格');
+  assert(bars[0].endOffset < bars[1].startOffset, '真实日期间隔应保留为格内空隙');
+  eq(bars[0].startOffset, 0, '周一从格首开始');
+  assert(bars[1].startOffset > 0.4 && bars[1].startOffset < 0.5, '周四应位于周格中后段');
+});
+
 // ===== 未排期分组 =====
 check('collectUnscheduled 按项目分组，仅含未排期步骤', () => {
   const projects = [
