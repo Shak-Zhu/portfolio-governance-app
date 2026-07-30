@@ -170,7 +170,7 @@ function findEndCell(cells, ms) {
  *
  * @param {Array} steps
  * @param {Array} cells generateTimeline 的返回值
- * @returns {Array<{stepId:string,stepName:string,status:string,startDate:string,endDate:string,colStart:number,colEnd:number,startOffset:number,endOffset:number,dependencyType:string,dependencyDetail:string,blockedImpact:string}>}
+ * @returns {Array<{stepId:string,stepName:string,status:string,startDate:string,endDate:string,colStart:number,colEnd:number,dependencyType:string,dependencyDetail:string,blockedImpact:string}>}
  */
 export function calculateBars(steps, cells) {
   const bars = [];
@@ -196,17 +196,6 @@ export function calculateBars(steps, cells) {
     if (colEnd === -1) colEnd = cells.length - 1;
     if (colEnd < colStart) colEnd = colStart;
 
-    // 周/月视图虽然以时间格聚合，但条形本身仍需保留格内的真实日期位置。
-    // 否则同一周/月内前后相隔几天的两个步骤会被误画为完全重叠。
-    const startCell = cells[colStart];
-    const endCell = cells[colEnd];
-    const startDuration = startCell.endMs - startCell.startMs + 1;
-    const endDuration = endCell.endMs - endCell.startMs + 1;
-    const visibleStartMs = Math.max(stepStartMs, startCell.startMs);
-    const visibleEndExclusiveMs = Math.min(stepEndMs + MS_PER_DAY, endCell.endMs + 1);
-    const startOffset = Math.max(0, Math.min(1, (visibleStartMs - startCell.startMs) / startDuration));
-    const endOffset = Math.max(0, Math.min(1, (visibleEndExclusiveMs - endCell.startMs) / endDuration));
-
     bars.push({
       stepId: step.id,
       stepName: step.name,
@@ -218,8 +207,6 @@ export function calculateBars(steps, cells) {
       blockedImpact: step.blocked_impact || '',
       colStart,
       colEnd,
-      startOffset,
-      endOffset,
     });
   }
 

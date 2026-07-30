@@ -15,9 +15,6 @@ export interface GanttBar {
   blockedImpact: string;
   colStart: number;
   colEnd: number;
-  // 在首/末时间格内按真实日期计算的比例，用于周/月视图保留格内间隔。
-  startOffset: number;
-  endOffset: number;
 }
 
 export interface TimelineCell {
