@@ -196,6 +196,7 @@ button { font: inherit; border: 0; cursor: pointer; }
 .badge.red { background: #ffdfde; color: #a22d29; }
 .badge.completed { background: #ddf5e7; color: #147548; }
 .badge.archived { background: #e8edf3; color: #657387; }
+.badge.overdue { background: #ffdfde; color: #a22d29; }
 
 .timeline {
   background: repeating-linear-gradient(to right, transparent 0, transparent calc(var(--column-width) - 1px), #e2e8f0 calc(var(--column-width) - 1px), #e2e8f0 var(--column-width));
@@ -217,6 +218,44 @@ button { font: inherit; border: 0; cursor: pointer; }
 }
 .timeline-guide.month {
   background-image: linear-gradient(to right, transparent calc(100% - 1px), #e7eef6 calc(100% - 1px));
+}
+
+/* 当前时间线：只是一根准确定位的参考线，不覆盖任何日期单元格。 */
+.today-marker {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  pointer-events: none;
+  background: #f97316;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.68);
+}
+.today-marker::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f97316;
+  box-shadow: 0 0 0 2px #fff;
+}
+.time-header .today-marker::after {
+  content: '今天';
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  padding: 1px 4px;
+  color: #fff;
+  background: #ea580c;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 14px;
+  white-space: nowrap;
 }
 
 .step-track {
@@ -259,6 +298,9 @@ button { font: inherit; border: 0; cursor: pointer; }
 .step-track.risk .step-duration, .step-track.risk .short-task-dot { background: var(--amber); }
 .step-track.blocked .step-duration, .step-track.blocked .short-task-dot { background: var(--red); }
 .step-track.risk .step-bar-label { color: #573900; }
+.step-track.overdue .step-duration { outline: 2px solid rgba(192, 38, 31, 0.82); outline-offset: -2px; }
+.step-track.overdue.compact-task .step-duration { outline: 0; box-shadow: 0 0 0 2px rgba(192, 38, 31, 0.85); }
+.step-track.overdue .short-task-chip { border-color: #e05a55; }
 
 /* 短任务：色条严格代表真实工期；名称是独立的白色信息卡，不再被误读为工期。 */
 .compact-task .step-duration {

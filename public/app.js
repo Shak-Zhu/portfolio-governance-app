@@ -12,6 +12,7 @@ let state = {
   collapsedProjectIds: new Set(),
   // 依赖说明默认收起；它是治理信息，不应伪装成工期或挤压时间轴。
   collapsedDependencyStepIds: new Set(),
+  todayMarkerTimer: null,
   editingSteps: {},  // 跟踪编辑中的步骤
   session: null,     // { sub, expiresAt } 或 null
   agentInstall: null, // 登录后从 /api/agent/install 获取的三段安装文案
@@ -93,6 +94,14 @@ function getTimelineDateRange(cell) {
   if (directStart && directEnd) return [directStart, directEnd];
   const matches = String(cell.rangeLabel || '').match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g) || [];
   return matches.length >= 2 ? [matches[0], matches[1]] : [];
+}
+
+function getLocalTodayKey(now = new Date()) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function isOverdueBar(bar, today = getLocalTodayKey()) {
+  return bar.status !== 'done' && bar.endDate && bar.endDate < today;
 }
 
 function formatTimelineCell(cell, scale) {
@@ -449,6 +458,7 @@ function renderGantt(data) {
   const colWidth = state.ganttScale === 'day' ? 48 : state.ganttScale === 'week' ? 112 : 150;
   const colsCount = data.timeline.length;
   const gridTemplate = `repeat(${colsCount}, ${colWidth}px)`;
+  const todayMarker = renderTodayMarker(data.timeline, colWidth);
 
   // 时间轴头部：严格按真实单元格数量渲染，不做静默截断
   timeHeader.innerHTML = data.timeline.map(cell => {
@@ -457,7 +467,7 @@ function renderGantt(data) {
     if (cell.isCurrent) cls += ' current';
     const title = cell.rangeLabel ? ` title="${escapeHtml(cell.rangeLabel)}"` : '';
     return `<div class="${cls}"${title}>${escapeHtml(formatTimelineCell(cell, state.ganttScale))}</div>`;
-  }).join('');
+  }).join('') + todayMarker;
   timeHeader.style.gridTemplateColumns = gridTemplate;
 
   if (data.rows.length === 0) {
@@ -479,6 +489,7 @@ function renderGantt(data) {
 
     const statusClass = p.status === 'completed' ? 'badge completed' : p.is_archived ? 'badge archived' : '';
     const statusLabel = p.is_archived ? '已归档' : p.status === 'completed' ? '已完成' : '执行中';
+    const overdueCount = row.bars.filter((bar) => isOverdueBar(bar)).length;
 
     const guidesHtml = renderTimelineGuides(data.timeline, state.ganttScale);
     const barsHtml = renderGanttBars(row.bars, data.timeline, colWidth);
@@ -494,11 +505,13 @@ function renderGantt(data) {
             <span class="badge">${escapeHtml(getOwner(p))}</span>
             ${healthBadge ? `<span class="badge ${getHealthClass(p.health)}">${healthBadge}</span>` : ''}
             <span class="badge">${escapeHtml(getStageName(p.stage))}</span>
+            ${overdueCount ? `<span class="badge overdue">逾期 ${overdueCount}</span>` : ''}
           </div>
           <span class="badge ${statusClass}">${statusLabel}</span>
         </div>
         <div class="timeline" style="grid-template-columns: ${gridTemplate}; --column-width: ${colWidth}px;">
           ${guidesHtml}
+          ${todayMarker}
           ${barsHtml}
         </div>
       </div>
@@ -519,6 +532,7 @@ function renderGantt(data) {
   });
 
   renderUnscheduled(data.unscheduled);
+  scheduleTodayMarkerRefresh(data.timeline, colWidth);
 }
 
 // 甘特条使用 CSS Grid 的 grid-column 落位，天然对齐时间轴单元格边界，
@@ -531,6 +545,36 @@ const dependencyTypeLabels = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getTodayMarkerLeft(timeline, colWidth, now = new Date()) {
+  const localMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const elapsedToday = now.getTime() - localMidnight.getTime();
+  const pointMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) + elapsedToday;
+  const cellIndex = timeline.findIndex((cell) => pointMs >= cell.startMs && pointMs <= cell.endMs + 1);
+  if (cellIndex < 0) return null;
+  const cell = timeline[cellIndex];
+  const cellLength = cell.endMs - cell.startMs + 1;
+  const fraction = Math.max(0, Math.min(1, (pointMs - cell.startMs) / cellLength));
+  return cellIndex * colWidth + fraction * colWidth;
+}
+
+function renderTodayMarker(timeline, colWidth) {
+  const left = getTodayMarkerLeft(timeline, colWidth);
+  if (left === null) return '';
+  const label = `今天 ${formatShortTimelineDate(getLocalTodayKey())}`;
+  return `<span class="today-marker" style="left: ${left.toFixed(2)}px" title="${label}" aria-label="${label}"></span>`;
+}
+
+function scheduleTodayMarkerRefresh(timeline, colWidth) {
+  if (state.todayMarkerTimer) clearInterval(state.todayMarkerTimer);
+  state.todayMarkerTimer = setInterval(() => {
+    const left = getTodayMarkerLeft(timeline, colWidth);
+    document.querySelectorAll('.today-marker').forEach((marker) => {
+      marker.hidden = left === null;
+      if (left !== null) marker.style.left = `${left.toFixed(2)}px`;
+    });
+  }, 60 * 1000);
+}
 
 // 周视图在每周格内显示每日刻度；月视图在每月格内显示每周刻度。
 // 任务的位置仍由真实日期计算，不会被这些视觉刻度取整。
@@ -583,6 +627,7 @@ function renderGanttBars(bars, timeline, colWidth) {
     const colStart = bar.colStart + 1; // grid-column 从 1 开始
     const colEnd = bar.colEnd + 2;     // 结束列 +1（闭区间）再 +1（grid 线）
     const { startOffset, durationWidth, compact } = getPreciseBarMetrics(bar, timeline, colWidth);
+    const overdue = isOverdueBar(bar);
     const dependencyDetail = (bar.dependencyDetail || '').trim();
     const blockedImpact = (bar.blockedImpact || '').trim();
     const showDependency = bar.status === 'blocked' && bar.dependencyType && bar.dependencyType !== 'none' && dependencyDetail;
@@ -597,9 +642,9 @@ function renderGanttBars(bars, timeline, colWidth) {
         ${dependencyCollapsed ? '' : `<span class="dependency-detail"><strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}</span>`}
       </div>` : '';
     return `
-      <div class="step-track ${escapeHtml(bar.status)} ${compact ? 'compact-task' : ''}"
+      <div class="step-track ${escapeHtml(bar.status)} ${compact ? 'compact-task' : ''} ${overdue ? 'overdue' : ''}"
            style="grid-column: ${colStart} / ${colEnd}; grid-row: ${row}; --bar-start: ${startOffset.toFixed(2)}px; --bar-width: ${durationWidth.toFixed(2)}px;"
-           title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）">
+           title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）${overdue ? ' · 已逾期' : ''}">
         <span class="step-duration" aria-hidden="true"></span>
         ${compact
           ? `<span class="short-task-chip"><span class="short-task-dot" aria-hidden="true"></span><span class="short-task-name">${escapeHtml(bar.stepName)}</span></span>`
