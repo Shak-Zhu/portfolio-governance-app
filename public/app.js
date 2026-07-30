@@ -9,6 +9,7 @@ let state = {
   stages: [],
   ganttScale: 'week',
   ganttRange: { start: '', end: '' },
+  collapsedProjectIds: new Set(),
   editingSteps: {},  // 跟踪编辑中的步骤
   session: null,     // { sub, expiresAt } 或 null
   agentInstall: null, // 登录后从 /api/agent/install 获取的三段安装文案
@@ -75,6 +76,41 @@ function getStageName(stage) {
 
 function getOwner(project) {
   return project.owner || '未分配';
+}
+
+function formatShortTimelineDate(value) {
+  if (!value) return '';
+  const match = String(value).match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (!match) return '';
+  return `${Number(match[2])}/${Number(match[3])}`;
+}
+
+function getTimelineDateRange(cell) {
+  const directStart = cell.startDate || cell.start_date || cell.start || cell.rangeStart || cell.date;
+  const directEnd = cell.endDate || cell.end_date || cell.end || cell.rangeEnd;
+  if (directStart && directEnd) return [directStart, directEnd];
+  const matches = String(cell.rangeLabel || '').match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g) || [];
+  return matches.length >= 2 ? [matches[0], matches[1]] : [];
+}
+
+function formatTimelineCell(cell, scale) {
+  if (scale === 'day') {
+    const [date] = getTimelineDateRange(cell);
+    const label = formatShortTimelineDate(date);
+    if (label) return label;
+  }
+  if (scale === 'week') {
+    if (cell.rangeLabel) return cell.rangeLabel;
+    const [start, end] = getTimelineDateRange(cell);
+    const startLabel = formatShortTimelineDate(start);
+    const endLabel = formatShortTimelineDate(end);
+    if (startLabel && endLabel) return `${startLabel}–${endLabel}`;
+  }
+  if (scale === 'month') {
+    const match = String(cell.rangeLabel || cell.label || '').match(/(\d{4})[-/]?(\d{1,2})/);
+    if (match) return `${match[1]}/${String(match[2]).padStart(2, '0')}`;
+  }
+  return cell.label || cell.rangeLabel || '—';
 }
 
 // ========== 初始化 ==========
@@ -407,7 +443,8 @@ function renderGantt(data) {
   const timeHeader = document.getElementById('timeHeader');
   const ganttBody = document.getElementById('ganttBody');
 
-  const colWidth = state.ganttScale === 'day' ? 56 : state.ganttScale === 'week' ? 70 : 80;
+  // 与已接受 Demo 对齐：日视图更密、周视图保留足够宽度显示起止日期。
+  const colWidth = state.ganttScale === 'day' ? 48 : state.ganttScale === 'week' ? 88 : 100;
   const colsCount = data.timeline.length;
   const gridTemplate = `repeat(${colsCount}, ${colWidth}px)`;
 
@@ -417,7 +454,7 @@ function renderGantt(data) {
     if (cell.isWeekend) cls += ' weekend';
     if (cell.isCurrent) cls += ' current';
     const title = cell.rangeLabel ? ` title="${escapeHtml(cell.rangeLabel)}"` : '';
-    return `<div class="${cls}"${title}>${escapeHtml(cell.label)}</div>`;
+    return `<div class="${cls}"${title}>${escapeHtml(formatTimelineCell(cell, state.ganttScale))}</div>`;
   }).join('');
   timeHeader.style.gridTemplateColumns = gridTemplate;
 
@@ -478,7 +515,7 @@ function renderGanttBars(bars, colsCount) {
       <div class="step-bar ${escapeHtml(bar.status)}"
            style="grid-column: ${colStart} / ${colEnd}; grid-row: ${i + 1};"
            title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）">
-        ${escapeHtml(bar.stepName)}
+        <span class="step-bar-label">${escapeHtml(bar.stepName)}</span>
       </div>
     `;
   }).join('');
@@ -559,8 +596,9 @@ async function renderProjectTable() {
     return;
   }
   
+  const orderedProjects = buildProjectTree(state.projects);
   const rowsHtml = [];
-  for (const p of state.projects) {
+  for (const { project: p, level, hasChildren, parentTitle } of orderedProjects) {
     const isTopLevel = !p.parent_id;
     const canArchive = isTopLevel && p.status === 'completed';
     
@@ -578,8 +616,17 @@ async function renderProjectTable() {
     } catch (e) {}
     
     rowsHtml.push(`
-      <tr data-id="${p.id}">
-        <td>${p.title}</td>
+      <tr data-id="${p.id}" data-tree-level="${level}">
+        <td>
+          <div class="project-tree-cell" style="--tree-depth: ${level};" role="treeitem" aria-level="${level + 1}"${hasChildren ? ` aria-expanded="${!state.collapsedProjectIds.has(p.id)}"` : ''}>
+            <span class="tree-rail" aria-hidden="true"></span>
+            ${hasChildren ? `<button class="tree-toggle" type="button" data-tree-toggle="${p.id}" aria-label="${state.collapsedProjectIds.has(p.id) ? '展开' : '收起'} ${escapeHtml(p.title)}">${state.collapsedProjectIds.has(p.id) ? '▸' : '▾'}</button>` : '<span class="tree-leaf" aria-hidden="true">└</span>'}
+            <div class="project-tree-content">
+              <div class="project-tree-title"><span class="project-kind">${p.parent_id ? '子项目' : '总项目'}</span>${escapeHtml(p.title)}</div>
+              ${parentTitle ? `<small class="project-parent-ref">隶属：${escapeHtml(parentTitle)}</small>` : ''}
+            </div>
+          </div>
+        </td>
         <td>${getOwner(p)}</td>
         <td>${p.expectation ? p.expectation.substring(0, 50) + (p.expectation.length > 50 ? '...' : '') : '-'}</td>
         <td>${getStageName(p.stage)}</td>
@@ -599,6 +646,38 @@ async function renderProjectTable() {
   }
   
   tbody.innerHTML = rowsHtml.join('');
+  tbody.querySelectorAll('[data-tree-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const projectId = button.dataset.treeToggle;
+      if (state.collapsedProjectIds.has(projectId)) state.collapsedProjectIds.delete(projectId);
+      else state.collapsedProjectIds.add(projectId);
+      renderProjectTable();
+    });
+  });
+}
+
+function buildProjectTree(projects) {
+  const byId = new Map(projects.map((project, index) => [project.id, { project, index, children: [] }]));
+  const roots = [];
+  byId.forEach((node) => {
+    const parent = node.project.parent_id ? byId.get(node.project.parent_id) : null;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  });
+  const byCreationOrder = (a, b) => a.index - b.index;
+  roots.sort(byCreationOrder);
+  byId.forEach((node) => node.children.sort(byCreationOrder));
+
+  const output = [];
+  const walk = (node, level, parentTitle = '') => {
+    const hasChildren = node.children.length > 0;
+    output.push({ project: node.project, level, hasChildren, parentTitle });
+    if (hasChildren && !state.collapsedProjectIds.has(node.project.id)) {
+      node.children.forEach((child) => walk(child, level + 1, node.project.title));
+    }
+  };
+  roots.forEach((node) => walk(node, 0));
+  return output;
 }
 
 function renderStageSummary() {

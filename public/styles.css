@@ -207,19 +207,46 @@ button { font: inherit; border: 0; cursor: pointer; }
 
 .step-bar {
   z-index: 1;
+  position: relative;
   align-self: center;
   margin: 0 4px;
   min-height: 28px;
-  padding: 6px 8px;
+  padding: 0;
   border-radius: 6px;
   color: #fff;
   font-size: 10px;
   line-height: 14px;
   font-weight: 750;
-  overflow: hidden;
+  min-width: 0;
+  overflow: visible;
+}
+
+/* 外层严格保持真实日期格宽度；标签可右向延展以完整展示名称。 */
+.step-bar-label {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  min-height: 28px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: inherit;
+  color: inherit;
   white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow: visible;
   box-shadow: 0 2px 5px rgba(20, 47, 82, 0.15);
+}
+
+/* 细竖线始终标识真实的计划结束日期，防止标签延展被误读为排期延长。 */
+.step-bar::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 0;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.9);
+  pointer-events: none;
 }
 
 .step-bar.done { background: var(--green); }
@@ -279,6 +306,41 @@ table { border-collapse: collapse; min-width: 1560px; width: 100%; font-size: 12
 th { background: var(--navy); color: #fff; text-align: left; padding: 12px 10px; white-space: nowrap; }
 td { border-top: 1px solid var(--line); padding: 11px 10px; vertical-align: top; color: #3d4e66; line-height: 17px; }
 td:first-child { font-weight: 750; color: var(--ink); }
+.project-tree-cell {
+  --tree-depth: 0;
+  display: flex;
+  align-items: flex-start;
+  min-width: 255px;
+  padding-left: calc(var(--tree-depth) * 24px);
+  position: relative;
+}
+.tree-rail {
+  width: 16px;
+  height: 30px;
+  margin-right: 2px;
+  border-left: 1px solid #9bb9dc;
+  border-bottom: 1px solid #9bb9dc;
+}
+.project-tree-cell[style*="--tree-depth: 0"] .tree-rail { border-color: transparent; }
+.tree-toggle, .tree-leaf {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin: 0 5px 0 -18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 4px;
+  color: #315d93;
+  background: transparent;
+  font-weight: 800;
+}
+.tree-toggle { border: 1px solid #c9d8ea; cursor: pointer; }
+.tree-toggle:hover, .tree-toggle:focus-visible { outline: 2px solid #7eafe8; outline-offset: 1px; background: #edf5ff; }
+.tree-leaf { color: #7e9ab9; font-family: monospace; }
+.project-tree-content { min-width: 0; }
+.project-tree-title { display: flex; align-items: center; gap: 6px; line-height: 20px; }
+.project-kind { flex: 0 0 auto; padding: 1px 5px; border-radius: 9px; background: #eaf2ff; color: #315d93; font-size: 10px; font-weight: 800; }
+.project-parent-ref { display: block; margin-top: 2px; color: #6b7f98; font-weight: 600; font-size: 10px; }
 
 .action-stack { display: grid; gap: 5px; }
 
