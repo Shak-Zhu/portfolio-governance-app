@@ -25,4 +25,5 @@ bucket_name = "pmo-governance-backups-prod"
 #   SHAK_PMO_WEB_LOGIN_PASSWORD  - 唯一合法账号密码
 #   SHAK_PMO_SESSION_SECRET      - 用于 Session Cookie HMAC 签名
 #   SHAK_PMO_MCP_TOKEN           - 单一 MCP Bearer Token（生产由 Codex 注入）
+#   SHAK_PMO_SKILL_SOURCE_COMMIT - Codex 发布后写入的 40 位 Git commit（非敏感；固定 GitHub Skill Bundle 链接）
 # 本地开发：复制 .dev.vars.example 为 .dev.vars 并填入临时值（不得提交）。

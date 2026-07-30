@@ -83,6 +83,7 @@ const mf = new Miniflare({
     SHAK_PMO_WEB_LOGIN_PASSWORD: PASSWORD,
     SHAK_PMO_SESSION_SECRET: SECRET,
     SHAK_PMO_MCP_TOKEN: TOKEN,
+    SHAK_PMO_SKILL_SOURCE_COMMIT: '25cb75c8e2768a54f9ad6c115ab464b3ee3ba906',
     // 本地 e2e 注入：让 Worker 在 ASSETS 不稳时也能直接返回主 HTML（生产不设置）。
     SHAK_PMO_INJECT_INDEX_HTML: readFileSync(resolve(root, 'public/index.html'), 'utf8'),
     SHAK_PMO_INJECT_LOGIN_HTML: readFileSync(resolve(root, 'public/login.html'), 'utf8'),
@@ -444,13 +445,13 @@ await t('带 Cookie GET /api/agent/install → 200 含真实 token + launchctl s
   if (!j.codex.includes('launchctl setenv SHAK_PMO_MCP_TOKEN')) throw new Error('missing launchctl setenv');
   if (!j.codex.includes('--bearer-token-env-var SHAK_PMO_MCP_TOKEN')) throw new Error('missing --bearer-token-env-var');
   if (!j.codex.includes(TOKEN)) throw new Error('missing real token in codex');
+  if (!j.codex.includes('raw.githubusercontent.com/Shak-Zhu/portfolio-governance-app/25cb75c8e2768a54f9ad6c115ab464b3ee3ba906/agent-skills/shak-project-portfolio-governance/')) throw new Error('missing fixed GitHub raw bundle root');
+  if (j.codex.includes('pmo.pmoforms.com/agent/')) throw new Error('must not fall back to pmo static skill URL');
   if (!j.cursor.includes(TOKEN)) throw new Error('missing real token in cursor');
   if (!j.generic.includes(TOKEN)) throw new Error('missing real token in generic');
-  if (!j.codex.includes('SKILL.md')) throw new Error('codex missing SKILL.md download');
-  if (!j.codex.includes('manifest.json')) throw new Error('codex missing manifest.json download');
-  if (!j.codex.includes('tool-contract.md')) throw new Error('codex missing tool-contract.md download');
-  if (!j.codex.includes('governance-rules.md')) throw new Error('codex missing governance-rules.md download');
-  if (!j.codex.includes('openai.yaml')) throw new Error('codex missing openai.yaml download');
+  if (!j.codex.includes("manifest['files'].items()")) throw new Error('codex missing manifest-driven bundle download');
+  if (!j.codex.includes('manifest.json')) throw new Error('codex missing manifest download');
+  if (!j.codex.includes('hashlib.sha256')) throw new Error('codex missing SHA-256 verification');
   const cc = r.headers['cache-control'] || '';
   if (!cc.includes('no-store')) throw new Error('no-store missing');
 });

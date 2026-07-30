@@ -190,6 +190,11 @@ export interface ServerContext {
   // Bearer 验证已由 /mcp 前置 middleware 完成；这里只携带一个可信标识。
   // actor 始终为 MCP_ACTOR，绝不来自入参。
   auth: { actor: typeof MCP_ACTOR };
+  skillDistribution?: {
+    sourceCommit: string;
+    bundleRoot: string;
+    manifestUrl: string;
+  } | null;
 }
 
 /**
@@ -635,8 +640,8 @@ export function createMcpServerFactory(ctx: ServerContext) {
           mcpName: AGENT_CONFIG.mcpName,
           serverVersion: SERVER_VERSION,
           toolProtocolVersion: AGENT_CONFIG.toolProtocolVersion,
-          skillVersion: AGENT_CONFIG.skillVersion,
-          manifestUrl: AGENT_CONFIG.manifestUrl,
+        skillVersion: AGENT_CONFIG.skillVersion,
+        manifestUrl: ctx.skillDistribution?.manifestUrl ?? null,
           mcpUrl: AGENT_CONFIG.mcpUrl,
           auth: {
             mode: 'bearer',
@@ -646,6 +651,8 @@ export function createMcpServerFactory(ctx: ServerContext) {
           toolCount: 31,
           health: 'ok',
           skillBundle: {
+            sourceCommit: ctx.skillDistribution?.sourceCommit ?? null,
+            bundleRoot: ctx.skillDistribution?.bundleRoot ?? null,
             files: [
               'SKILL.md',
               'shak-project-portfolio-governance.mdc',

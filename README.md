@@ -72,6 +72,7 @@ database_id = "YOUR_ACTUAL_DATABASE_ID"
 - `SHAK_PMO_WEB_LOGIN_PASSWORD` — 唯一合法账号密码
 - `SHAK_PMO_SESSION_SECRET` — ≥ 32 字节随机串，用于 Session Cookie HMAC 签名
 - `SHAK_PMO_MCP_TOKEN` — 单用户 MCP Bearer Token；本地任意 ≥ 32 字节随机串
+- `SHAK_PMO_SKILL_SOURCE_COMMIT` — Codex 发布后写入的 40 位 Git commit；一键安装从该固定 commit 下载并校验完整 Skill Bundle
 
 ### 5. 运行 Migrations
 

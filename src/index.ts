@@ -24,6 +24,7 @@ import {
   issueSession,
   parseCookies,
   SESSION_COOKIE_NAME,
+  timingSafeEqual,
   verifyLoginCredentials,
   verifySession,
 } from './auth';
@@ -37,6 +38,8 @@ interface Env {
   SHAK_PMO_WEB_LOGIN_PASSWORD?: string;
   SHAK_PMO_SESSION_SECRET?: string;
   SHAK_PMO_MCP_TOKEN?: string;
+  // 非敏感发布引用：仅由 Codex 在 Git 发布后写入最终 Skill Bundle commit。
+  SHAK_PMO_SKILL_SOURCE_COMMIT?: string;
   // Node compat 需要
 }
 
@@ -54,6 +57,21 @@ const PUBLIC_WEB_PATHS = new Set([
 // 静态资源（login 页本身依赖）公开；其它 HTML 必须经过登录保护。
 const PUBLIC_STATIC_EXTENSIONS = ['.js', '.css', '.png', '.svg', '.ico', '.map'];
 const PUBLIC_STATIC_PREFIXES = ['/agent/'];
+const SKILL_GITHUB_REPO = 'Shak-Zhu/portfolio-governance-app';
+
+interface SkillDistribution {
+  sourceCommit: string;
+  bundleRoot: string;
+  manifestUrl: string;
+}
+
+function getSkillDistribution(env: Env): SkillDistribution | null {
+  const sourceCommit = (env.SHAK_PMO_SKILL_SOURCE_COMMIT || '').trim();
+  // 只允许不可变 40 位 Git SHA；禁止 main、tag、仓库首页或任意 URL。
+  if (!/^[0-9a-f]{40}$/i.test(sourceCommit)) return null;
+  const bundleRoot = `https://raw.githubusercontent.com/${SKILL_GITHUB_REPO}/${sourceCommit}/agent-skills/${AGENT_CONFIG.mcpName}`;
+  return { sourceCommit, bundleRoot, manifestUrl: `${bundleRoot}/manifest.json` };
+}
 
 const BEARER_UNAUTHORIZED = (reason: string) =>
   new Response(JSON.stringify({
@@ -94,21 +112,18 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (!expected) {
     return BEARER_UNAUTHORIZED('Server bearer token not configured');
   }
-  // 时序安全等长比较：长度不同直接 fail
-  if (presented.length !== expected.length) {
-    return BEARER_UNAUTHORIZED('Invalid bearer token');
-  }
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= expected.charCodeAt(i) ^ presented.charCodeAt(i);
-  }
-  if (diff !== 0) {
+  // 固定长度 SHA-256 摘要 + XOR 比较；不因 token 长度/首个差异提前返回。
+  if (!(await timingSafeEqual(presented, expected))) {
     return BEARER_UNAUTHORIZED('Invalid bearer token');
   }
 
   // 正确 Bearer：交给官方 createMcpHandler（agents/mcp）。每次请求调用 createServer
   // factory，返回全新的 McpServer 实例。
-  const serverCtx = { db: env.DB, auth: { actor: MCP_ACTOR as typeof MCP_ACTOR } };
+  const serverCtx = {
+    db: env.DB,
+    auth: { actor: MCP_ACTOR as typeof MCP_ACTOR },
+    skillDistribution: getSkillDistribution(env),
+  };
   try {
     return await createMcpHandler(createMcpServerFactory(serverCtx), {
       route: '/mcp',
@@ -161,11 +176,12 @@ app.get('/api/health', (c) => {
 app.get('/api/agent/config', (c) => {
   const origin = new URL(c.req.url).origin;
   const bearerConfigured = !!c.env.SHAK_PMO_MCP_TOKEN;
+  const distribution = getSkillDistribution(c.env);
   return Response.json({
     mcpName: AGENT_CONFIG.mcpName,
     systemName: AGENT_CONFIG.systemName,
     mcpUrl: AGENT_CONFIG.mcpUrl,
-    manifestUrl: AGENT_CONFIG.manifestUrl,
+    manifestUrl: distribution?.manifestUrl ?? null,
     skillVersion: AGENT_CONFIG.skillVersion,
     serverVersion: AGENT_CONFIG.serverVersion,
     toolProtocolVersion: AGENT_CONFIG.toolProtocolVersion,
@@ -175,6 +191,7 @@ app.get('/api/agent/config', (c) => {
       header: 'Authorization: Bearer <token>',
       configured: bearerConfigured,
     },
+    skillDistribution: distribution,
     localMcpUrl: `${origin}/mcp`,
   });
 });
@@ -335,10 +352,13 @@ app.get('/api/agent/install', async (c) => {
   if (!mcpToken) {
     return Response.json({ error: '服务未配置 MCP Token' }, { status: 503, headers: noStoreHeaders() });
   }
+  const distribution = getSkillDistribution(c.env);
+  if (!distribution) {
+    return Response.json({ error: 'Skill 发布版本尚未由 Codex 固化' }, { status: 503, headers: noStoreHeaders() });
+  }
   const mcpUrl = AGENT_CONFIG.mcpUrl;
-  const skillUrl = AGENT_CONFIG.files.skill.url;
-  const ruleUrl = AGENT_CONFIG.files.rule.url;
-  const manifestUrl = AGENT_CONFIG.manifestUrl;
+  const skillRoot = distribution.bundleRoot;
+  const manifestUrl = distribution.manifestUrl;
   const mcpName = AGENT_CONFIG.mcpName;
 
   // Codex CLI 实际支持的 flag 只有 --bearer-token-env-var，
@@ -358,28 +378,49 @@ export SHAK_PMO_MCP_TOKEN="${mcpToken}"
 # 2) 注册 MCP（官方 Streamable HTTP + Bearer Header via env var）
 codex mcp add ${mcpName} --url ${mcpUrl} --bearer-token-env-var SHAK_PMO_MCP_TOKEN
 #
-# 3) 安装 Skill（下载完整 bundle，由 Codex 加载到 ~/.codex/skills/${mcpName}/）
-mkdir -p "$HOME/.codex/skills/${mcpName}"
-# Skill 入口
-curl -fsSL "${skillUrl}" -o "$HOME/.codex/skills/${mcpName}/SKILL.md"
-# Skill 完整 bundle：references + agents/openai.yaml + manifest
-curl -fsSL "${manifestUrl}" -o "$HOME/.codex/skills/${mcpName}/manifest.json"
-mkdir -p "$HOME/.codex/skills/${mcpName}/references"
-curl -fsSL "${skillUrl.replace('/SKILL.md', '/references/tool-contract.md')}" -o "$HOME/.codex/skills/${mcpName}/references/tool-contract.md"
-curl -fsSL "${skillUrl.replace('/SKILL.md', '/references/governance-rules.md')}" -o "$HOME/.codex/skills/${mcpName}/references/governance-rules.md"
-mkdir -p "$HOME/.codex/skills/${mcpName}/agents"
-curl -fsSL "${skillUrl.replace('/SKILL.md', '/agents/openai.yaml')}" -o "$HOME/.codex/skills/${mcpName}/agents/openai.yaml"
+# 3) 安装完整 GitHub Skill Bundle（固定 commit，不使用 main / 仓库首页 / 站点静态文件）
+export SHAK_SKILL_ROOT="${skillRoot}"
+export SHAK_SKILL_MANIFEST="${manifestUrl}"
+export SHAK_SKILL_TARGET="$HOME/.codex/skills/${mcpName}"
+python3 - <<'PY'
+import hashlib, json, os, shutil, sys, tempfile, urllib.parse, urllib.request
+root, manifest_url, target = os.environ['SHAK_SKILL_ROOT'], os.environ['SHAK_SKILL_MANIFEST'], os.environ['SHAK_SKILL_TARGET']
+tmp = tempfile.mkdtemp(prefix='shak-skill-')
+try:
+    with urllib.request.urlopen(manifest_url) as r:
+        manifest = json.load(r)
+    for rel, meta in manifest['files'].items():
+        dest = os.path.join(tmp, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with urllib.request.urlopen(root + '/' + urllib.parse.quote(rel)) as r:
+            data = r.read()
+        if hashlib.sha256(data).hexdigest() != meta['sha256']:
+            raise RuntimeError('SHA-256 mismatch: ' + rel)
+        with open(dest, 'wb') as f: f.write(data)
+    with open(os.path.join(tmp, 'manifest.json'), 'wb') as f:
+        f.write(json.dumps(manifest, ensure_ascii=False, indent=2).encode() + b'\\n')
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.move(tmp, target)
+    tmp = None
+    print('Skill Bundle 已校验并安装:', target)
+except Exception as e:
+    print('Skill 安装失败:', e, file=sys.stderr)
+    sys.exit(1)
+finally:
+    if tmp: shutil.rmtree(tmp, ignore_errors=True)
+PY
 #
 # 4) 验证
 codex mcp list
 # 完全退出 Codex Desktop 并重开 → 在 Codex 中调用 get_capabilities：
 #   确认 toolCount=31、auth.mode=bearer、skillVersion 与 manifest 一致。
 echo "manifest: ${manifestUrl}"
-echo "skill   : ${skillUrl}"`;
+echo "skill root: ${skillRoot}"`;
 
   const cursor = `# Shak 项目组合治理系统 · Cursor 接入（Bearer Token, 安全合并 ~/.cursor/mcp.json，不覆盖已有 MCP）
 python3 - <<'PY'
-import json, os, urllib.request
+import hashlib, json, os, shutil, tempfile, urllib.parse, urllib.request
 home = os.path.expanduser("~")
 cfg_path = os.path.join(home, ".cursor", "mcp.json")
 os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
@@ -394,10 +435,25 @@ servers["${mcpName}"] = {"url": "${mcpUrl}", "headers": {"Authorization": "Beare
 with open(cfg_path, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 print("已安全合并到", cfg_path)
-# 安装 Cursor Rule (.mdc)
+# 下载并校验完整 GitHub Skill Bundle；Cursor Rule 从同一固定 commit 安装。
+root = "${skillRoot}"
+tmp = tempfile.mkdtemp(prefix="shak-skill-")
+try:
+    with urllib.request.urlopen("${manifestUrl}") as r: manifest = json.load(r)
+    for rel, meta in manifest["files"].items():
+        dest = os.path.join(tmp, rel); os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with urllib.request.urlopen(root + "/" + urllib.parse.quote(rel)) as r: data = r.read()
+        if hashlib.sha256(data).hexdigest() != meta["sha256"]: raise RuntimeError("SHA-256 mismatch: " + rel)
+        with open(dest, "wb") as f: f.write(data)
+    bundle_dir = os.path.join(home, ".cursor", "skills", "${mcpName}")
+    shutil.rmtree(bundle_dir, ignore_errors=True); os.makedirs(os.path.dirname(bundle_dir), exist_ok=True)
+    shutil.move(tmp, bundle_dir); tmp = None
+finally:
+    if tmp: shutil.rmtree(tmp, ignore_errors=True)
+# 安装 Cursor Rule (.mdc) from verified bundle
 rule_dir = os.path.join(home, ".cursor", "rules")
 os.makedirs(rule_dir, exist_ok=True)
-urllib.request.urlretrieve("${ruleUrl}", os.path.join(rule_dir, "${mcpName}.mdc"))
+shutil.copyfile(os.path.join(bundle_dir, "shak-project-portfolio-governance.mdc"), os.path.join(rule_dir, "${mcpName}.mdc"))
 print("已安装 Rule:", os.path.join(rule_dir, "${mcpName}.mdc"))
 PY
 # 在 Cursor 中打开 MCP 设置，完成本 MCP 接入（Bearer Header 由上述配置提供）。
@@ -415,8 +471,8 @@ echo "manifest: ${manifestUrl}"`;
 #   3) 调用 tools/list 做工具发现
 #   4) 调用 get_capabilities，确认 skillVersion 与 manifest 一致：
 #      ${manifestUrl}
-# Skill 文档 : ${skillUrl}
-# Rule 文档  : ${ruleUrl}`;
+# Skill Bundle root（固定 Git commit）: ${skillRoot}
+# Rule 文档  : ${skillRoot}/shak-project-portfolio-governance.mdc`;
 
   return Response.json(
     { codex, cursor, generic },
