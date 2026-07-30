@@ -10,6 +10,8 @@ let state = {
   ganttScale: 'week',
   ganttRange: { start: '', end: '' },
   collapsedProjectIds: new Set(),
+  // 依赖说明默认收起；它是治理信息，不应伪装成工期或挤压时间轴。
+  collapsedDependencyStepIds: new Set(),
   editingSteps: {},  // 跟踪编辑中的步骤
   session: null,     // { sub, expiresAt } 或 null
   agentInstall: null, // 登录后从 /api/agent/install 获取的三段安装文案
@@ -478,7 +480,7 @@ function renderGantt(data) {
     const statusClass = p.status === 'completed' ? 'badge completed' : p.is_archived ? 'badge archived' : '';
     const statusLabel = p.is_archived ? '已归档' : p.status === 'completed' ? '已完成' : '执行中';
 
-    const barsHtml = renderGanttBars(row.bars, colsCount);
+    const barsHtml = renderGanttBars(row.bars, data.timeline, colWidth);
 
     return `
       <div class="gantt-row ${level > 0 ? 'level-' + level : 'parent'}">
@@ -501,6 +503,19 @@ function renderGantt(data) {
     `;
   }).join('');
 
+  // 依赖说明与工期条分层呈现；展开状态只保存在当前页面，避免重载后留下噪声。
+  ganttBody.querySelectorAll('[data-dependency-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const { stepId } = button.dataset;
+      if (state.collapsedDependencyStepIds.has(stepId)) {
+        state.collapsedDependencyStepIds.delete(stepId);
+      } else {
+        state.collapsedDependencyStepIds.add(stepId);
+      }
+      renderGantt(data);
+    });
+  });
+
   renderUnscheduled(data.unscheduled);
 }
 
@@ -513,28 +528,56 @@ const dependencyTypeLabels = {
   external_dependency: '外部依赖',
 };
 
-function renderGanttBars(bars, colsCount) {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function dateToUtcMs(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : NaN;
+}
+
+// 周/月格内仍按真实日期落位：例如 8/3–8/4 不会占满整个 8 月格。
+function getPreciseBarMetrics(bar, timeline, colWidth) {
+  const firstCell = timeline[bar.colStart];
+  const lastCell = timeline[bar.colEnd];
+  const startMs = Math.max(dateToUtcMs(bar.startDate), firstCell.startMs);
+  const endExclusiveMs = Math.min(dateToUtcMs(bar.endDate) + DAY_MS, lastCell.endMs + DAY_MS);
+  const firstCellMs = firstCell.endMs - firstCell.startMs + DAY_MS;
+  const lastCellMs = lastCell.endMs - lastCell.startMs + DAY_MS;
+  const startOffset = Math.max(0, Math.min(colWidth, ((startMs - firstCell.startMs) / firstCellMs) * colWidth));
+  const endOffset = Math.max(0, Math.min(colWidth, ((lastCell.endMs + DAY_MS - endExclusiveMs) / lastCellMs) * colWidth));
+  const spanWidth = (bar.colEnd - bar.colStart + 1) * colWidth;
+  const durationWidth = Math.max(2, spanWidth - startOffset - endOffset);
+  return { startOffset, durationWidth, compact: durationWidth < 72 };
+}
+
+function renderGanttBars(bars, timeline, colWidth) {
   if (!bars || bars.length === 0) return '';
   let nextRow = 1;
   return bars.map((bar) => {
     const colStart = bar.colStart + 1; // grid-column 从 1 开始
     const colEnd = bar.colEnd + 2;     // 结束列 +1（闭区间）再 +1（grid 线）
+    const { startOffset, durationWidth, compact } = getPreciseBarMetrics(bar, timeline, colWidth);
     const dependencyDetail = (bar.dependencyDetail || '').trim();
     const blockedImpact = (bar.blockedImpact || '').trim();
     const showDependency = bar.status === 'blocked' && bar.dependencyType && bar.dependencyType !== 'none' && dependencyDetail;
     const row = nextRow++;
     const dependencyRow = showDependency ? nextRow++ : null;
+    const dependencyCollapsed = !state.collapsedDependencyStepIds.has(bar.stepId);
     const callout = showDependency ? `
       <div class="dependency-callout blocked"
            style="grid-column: ${colStart} / -1; grid-row: ${dependencyRow};"
            title="前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：${escapeHtml(dependencyDetail)}${blockedImpact ? `；阻塞：${escapeHtml(blockedImpact)}` : ''}">
-        <strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}
+        <button type="button" class="dependency-toggle" data-dependency-toggle data-step-id="${escapeHtml(bar.stepId)}" aria-expanded="${String(!dependencyCollapsed)}">${dependencyCollapsed ? '▸ 展开依赖' : '▾ 收起依赖'}</button>
+        ${dependencyCollapsed ? '' : `<span class="dependency-detail"><strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}</span>`}
       </div>` : '';
     return `
-      <div class="step-bar ${escapeHtml(bar.status)}"
-           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${row};"
+      <div class="step-track ${escapeHtml(bar.status)} ${compact ? 'compact-task' : ''}"
+           style="grid-column: ${colStart} / ${colEnd}; grid-row: ${row}; --bar-start: ${startOffset.toFixed(2)}px; --bar-width: ${durationWidth.toFixed(2)}px;"
            title="${escapeHtml(bar.stepName)}（${escapeHtml(bar.startDate)} → ${escapeHtml(bar.endDate)}）">
-        <span class="step-bar-label">${escapeHtml(bar.stepName)}</span>
+        <span class="step-duration" aria-hidden="true"></span>
+        ${compact
+          ? `<span class="short-task-chip"><span class="short-task-dot" aria-hidden="true"></span><span class="short-task-name">${escapeHtml(bar.stepName)}</span></span>`
+          : `<span class="step-bar-label">${escapeHtml(bar.stepName)}</span>`}
       </div>
       ${callout}`;
   }).join('');
