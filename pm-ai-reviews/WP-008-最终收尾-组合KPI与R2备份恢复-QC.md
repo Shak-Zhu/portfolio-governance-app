@@ -54,3 +54,17 @@
 ## 后续
 
 已签发 `pm-ai-work-packages/WP-008-L3-真实Cron触发验收返工.md`。该返工只补本地 cron 集成测试，不得修改业务逻辑或执行任何生产动作。
+
+## L3 独立复验与发布（2026-07-30）
+
+- 独立执行：`npm run lint`、`npm test`（12/12）、`npm run test:e2e`（59/59）、`npm run test:scheduled`（9/9）、`npm run build`、`git diff --check`，全部通过。
+- `scripts/test-scheduled.mjs` 打包真实 Worker 后直接调用其 `scheduled()` handler；本地 R2 备份对象从 0 增至 1，备份 JSON、六表摘要、SHA-256 和保留上限均已验证。
+- 已创建独立 Cloudflare D1 `pmo-governance-restore-drill`，并远程应用 `0001_initial_schema.sql` 两次验证幂等；它通过固定 `RESTORE_DRILL_DB` binding 与生产 `DB` 隔离。
+- Git commit `1e20480e01ac6ac7f4a3d4445d04eeadda790f26` 已推送；Worker 已生产发布为 Version `8a03b93d-51f7-4dca-9ad9-54a42a7f1dcb`。
+- 线上回读：`/api/health` 为 200；无会话 `GET /api/backups/status` 和 `POST /api/backups` 均为 401；主页未登录重定向到 `/login`。
+
+## PM/QC 结论
+
+**accepted, pending Human Owner unified acceptance**
+
+WP-008 的工程、测试、Git、Cloudflare 隔离库、生产部署和非认证线上回归已全部完成。最终业务验收由 Human Owner 执行；在此之前不得声称 Human Owner 已接受。
