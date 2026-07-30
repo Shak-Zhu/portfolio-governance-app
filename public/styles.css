@@ -333,7 +333,8 @@ button { font: inherit; border: 0; cursor: pointer; }
 .dependency-callout {
   align-self: start;
   z-index: 2;
-  margin: -1px 5px 0 5px;
+  /* 与任务在周/月格内的真实起点对齐，不回退到该格的左边界。 */
+  margin: -1px 5px 0 calc(5px + var(--dependency-start, 0px));
   padding: 3px 7px;
   width: max-content;
   max-width: min(760px, calc(100% - 10px));

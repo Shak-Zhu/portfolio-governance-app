@@ -636,7 +636,7 @@ function renderGanttBars(bars, timeline, colWidth) {
     const dependencyCollapsed = !state.collapsedDependencyStepIds.has(bar.stepId);
     const callout = showDependency ? `
       <div class="dependency-callout blocked"
-           style="grid-column: ${colStart} / -1; grid-row: ${dependencyRow};"
+           style="grid-column: ${colStart} / -1; grid-row: ${dependencyRow}; --dependency-start: ${startOffset.toFixed(2)}px;"
            title="前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：${escapeHtml(dependencyDetail)}${blockedImpact ? `；阻塞：${escapeHtml(blockedImpact)}` : ''}">
         <button type="button" class="dependency-toggle" data-dependency-toggle data-step-id="${escapeHtml(bar.stepId)}" aria-expanded="${String(!dependencyCollapsed)}">${dependencyCollapsed ? '▸ 展开依赖' : '▾ 收起依赖'}</button>
         ${dependencyCollapsed ? '' : `<span class="dependency-detail"><strong>前置（${escapeHtml(dependencyTypeLabels[bar.dependencyType] || bar.dependencyType)}）：</strong>${escapeHtml(dependencyDetail)}${blockedImpact ? `<span> → 阻塞：</span>${escapeHtml(blockedImpact)}` : ''}</span>`}
