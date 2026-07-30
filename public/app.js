@@ -281,7 +281,7 @@ async function loadAgentInstallCommands() {
     state.agentInstall = data;
     buttons.forEach((btn) => {
       btn.disabled = false;
-      btn.textContent = '一键复制安装指令';
+      btn.textContent = '一键复制安装或更新指令';
       const client = btn.dataset.client;
       btn.onclick = () => copyAgentCommand(client, btn);
     });
@@ -308,7 +308,7 @@ async function copyAgentCommand(client, btn) {
   const hint = document.querySelector(`.agent-copy-hint[data-client="${client}"]`);
   try {
     await navigator.clipboard.writeText(cmd);
-    if (hint) hint.textContent = '已复制到剪贴板。粘贴到终端执行，Codex/Cursor 会使用本会话的 Bearer Token。';
+    if (hint) hint.textContent = '已复制到剪贴板。粘贴到终端执行：首次会安装，已有同名 Agent 时只更新该 Agent。';
   } catch {
     if (hint) {
       hint.textContent = '浏览器阻止了剪贴板，请手动复制下方指令：';

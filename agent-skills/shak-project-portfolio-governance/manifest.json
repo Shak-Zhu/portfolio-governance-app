@@ -10,11 +10,11 @@
   "serverVersion": "1.0.0",
   "manifestPath": "manifest.json",
   "skillSourceCommit": null,
-  "generatedAt": "2026-07-30T12:15:41.220Z",
+  "generatedAt": "2026-07-30T16:35:51.645Z",
   "files": {
     "SKILL.md": {
       "path": "SKILL.md",
-      "sha256": "b6f8fad3259635a2c63f21c2e14c093d145bcb3ff06c50accda98d7d17acec11",
+      "sha256": "bd2d019b1fbc640654fc499a5d35252a9c0f94d16f420fd868ae2808e9a29743",
       "bytes": 9660
     },
     "shak-project-portfolio-governance.mdc": {

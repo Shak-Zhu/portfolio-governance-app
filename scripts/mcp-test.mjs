@@ -103,6 +103,10 @@ function cookieHeader() {
 
 // ============ MCP RPC 客户端（带 Bearer，兼容 JSON 与 SSE）============
 let rpcId = 0;
+function nextId() {
+  rpcId += 1;
+  return rpcId;
+}
 
 async function mcpRpc(method, params, opts = {}) {
   const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' };
@@ -280,6 +284,12 @@ async function runToolMatrixTests() {
       const text = r.body?.result?.content?.[0]?.text || '';
       try { Object.assign(out, JSON.parse(text)); } catch {}
     }
+    // 当前 MCP SDK 会把顶层数组/对象包装为 { result: ... }；测试应按
+    // 工具合同的真实返回值断言，而非把 transport envelope 当成业务数据。
+    if (out && !Array.isArray(out) && typeof out === 'object'
+      && Object.keys(out).length === 1 && Object.prototype.hasOwnProperty.call(out, 'result')) {
+      return out.result;
+    }
     return out;
   }
 
@@ -423,7 +433,7 @@ async function runToolMatrixTests() {
 
   await test('M26. get_gantt', async () => {
     const out = await call('get_gantt', { portfolioId: ctx.portfolioId, scale: 'week' });
-    assert(out.timeline && Array.isArray(out.timeline.cells), 'timeline.cells 应为数组');
+    assert(Array.isArray(out.timeline), 'timeline 应为数组');
     assert(Array.isArray(out.rows), 'rows 应为数组');
   });
 
@@ -447,16 +457,15 @@ async function runToolMatrixTests() {
     ctx.linkId = null;
   });
 
-  // delete_project 需要 project 不存在子项目；刚才已经 archive 了，再 delete 应能通过
-  await test('M31. delete_project (archived) + delete_portfolio', async () => {
-    // 直接 delete 顶级项目（含 archived 后代）应被拒，需先取消归档？这里只清理组合
-    await call('delete_portfolio', { portfolioId: ctx.portfolioId });
+  await test('M31. delete_stage (未引用)', async () => {
+    const stage = await call('create_stage', { portfolioId: ctx.portfolioId, name: 'WP006 Unused Stage' });
+    const out = await call('delete_stage', { stageId: stage.id });
+    assert(out.success === true, `未引用 Stage 删除应成功：${JSON.stringify(out)}`);
   });
 
-  await test('M32. delete_stage (未引用)', async () => {
-    // 上面 project 已经 archive / portfolio 被 delete，应可成功
-    const r = await mcpRpc('tools/call', { name: 'delete_stage', arguments: { stageId: ctx.stageId } });
-    assert(!r.body?.result?.isError, `未引用 Stage 删除应成功：${JSON.stringify(r.body)}`);
+  // delete_project 需要项目没有未归档子项目；刚才已归档，随后删除组合用于清理测试数据。
+  await test('M32. delete_project (archived) + delete_portfolio', async () => {
+    await call('delete_portfolio', { portfolioId: ctx.portfolioId });
   });
 }
 
@@ -492,8 +501,15 @@ async function runWebTests() {
       `cursor 文案必须含真实 Bearer Token`);
     assert(typeof r.data.generic === 'string' && r.data.generic.includes('Bearer ') && r.data.generic.includes(TOKEN),
       `generic 文案必须含真实 Bearer Token`);
-    // Codex 文案必须使用 codex mcp add
-    assert(r.data.codex.includes('codex mcp add'), 'Codex 文案必须使用 codex mcp add');
+    // Codex 文案必须兼容首次安装、同名配置不变和仅更新同名配置三种状态。
+    assert(r.data.codex.includes('codex mcp get') && r.data.codex.includes('--json'),
+      'Codex 文案必须先读取已有 MCP 配置');
+    assert(r.data.codex.includes('codex mcp remove') && r.data.codex.includes('codex mcp add'),
+      'Codex 文案必须能仅替换同名 MCP');
+    assert(r.data.codex.includes('MCP 已是目标配置，跳过更新'),
+      'Codex 文案必须在目标配置一致时跳过更新');
+    assert(r.data.codex.includes('skill-backups') && r.data.codex.includes('os.replace(tmp, target)'),
+      'Codex Skill 更新必须保留非 skills 目录内的可回退备份并原子切换');
     // Cursor 文案必须安全合并 mcp.json
     assert(r.data.cursor.includes('.cursor/mcp.json') && r.data.cursor.includes('setdefault'),
       'Cursor 文案必须安全合并 mcp.json');

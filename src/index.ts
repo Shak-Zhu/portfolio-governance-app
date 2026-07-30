@@ -372,7 +372,7 @@ app.get('/api/agent/install', async (c) => {
   // 因此文案必须先 setenv（macOS 用 launchctl setenv；其它平台导出后启动 Codex Desktop），
   // 再用 --bearer-token-env-var 引用环境变量名，最后提示完全退出/重开 Codex Desktop
   // （Codex Desktop 不会自动重新加载 setenv）。
-  const codex = `# Shak 项目组合治理系统 · Codex 接入（Bearer Token, 安全合并，不覆盖已有配置）
+  const codex = `# Shak 项目组合治理系统 · Codex 接入（安装或更新；仅处理本 MCP，不影响其它配置）
 # MCP 名称 : ${mcpName}
 # MCP URL  : ${mcpUrl}
 # 说明    : Codex CLI 仅支持 --bearer-token-env-var；Token 写入环境变量再引用。
@@ -382,17 +382,49 @@ app.get('/api/agent/install', async (c) => {
 launchctl setenv SHAK_PMO_MCP_TOKEN "${mcpToken}"
 export SHAK_PMO_MCP_TOKEN="${mcpToken}"
 #
-# 2) 注册 MCP（官方 Streamable HTTP + Bearer Header via env var）
-codex mcp add ${mcpName} --url ${mcpUrl} --bearer-token-env-var SHAK_PMO_MCP_TOKEN
+# 2) 安装或更新 MCP（先比对；仅在不存在或配置不一致时处理此名称）
+export SHAK_MCP_NAME="${mcpName}"
+export SHAK_MCP_URL="${mcpUrl}"
+export SHAK_MCP_TOKEN_ENV="SHAK_PMO_MCP_TOKEN"
+if SHAK_MCP_CURRENT="$(codex mcp get "$SHAK_MCP_NAME" --json 2>/dev/null)"; then
+  if printf '%s' "$SHAK_MCP_CURRENT" | python3 -c '
+import json, sys
+expected_url, expected_env = sys.argv[1:]
+try:
+    current = json.load(sys.stdin)
+    transport = current.get("transport") or {}
+    matches = (
+        current.get("enabled") is True
+        and transport.get("type") == "streamable_http"
+        and transport.get("url") == expected_url
+        and transport.get("bearer_token_env_var") == expected_env
+    )
+except Exception:
+    matches = False
+sys.exit(0 if matches else 1)
+' "$SHAK_MCP_URL" "$SHAK_MCP_TOKEN_ENV"
+  then
+    echo "MCP 已是目标配置，跳过更新: $SHAK_MCP_NAME"
+  else
+    echo "MCP 配置不一致，仅更新: $SHAK_MCP_NAME"
+    codex mcp remove "$SHAK_MCP_NAME"
+    codex mcp add "$SHAK_MCP_NAME" --url "$SHAK_MCP_URL" --bearer-token-env-var SHAK_PMO_MCP_TOKEN
+  fi
+else
+  echo "MCP 尚未安装，开始注册: $SHAK_MCP_NAME"
+  codex mcp add "$SHAK_MCP_NAME" --url "$SHAK_MCP_URL" --bearer-token-env-var SHAK_PMO_MCP_TOKEN
+fi
 #
-# 3) 安装完整 GitHub Skill Bundle（固定 commit，不使用 main / 仓库首页 / 站点静态文件）
+# 3) 安装或更新完整 GitHub Skill Bundle（固定 commit，不使用 main / 仓库首页 / 站点静态文件）
 export SHAK_SKILL_ROOT="${skillRoot}"
 export SHAK_SKILL_MANIFEST="${manifestUrl}"
 export SHAK_SKILL_TARGET="$HOME/.codex/skills/${mcpName}"
 python3 - <<'PY'
 import hashlib, json, os, shutil, sys, tempfile, urllib.parse, urllib.request
+from datetime import datetime, timezone
 root, manifest_url, target = os.environ['SHAK_SKILL_ROOT'], os.environ['SHAK_SKILL_MANIFEST'], os.environ['SHAK_SKILL_TARGET']
 tmp = tempfile.mkdtemp(prefix='shak-skill-')
+backup = None
 try:
     with urllib.request.urlopen(manifest_url) as r:
         manifest = json.load(r)
@@ -407,11 +439,19 @@ try:
     with open(os.path.join(tmp, 'manifest.json'), 'wb') as f:
         f.write(json.dumps(manifest, ensure_ascii=False, indent=2).encode() + b'\\n')
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.rmtree(target, ignore_errors=True)
-    shutil.move(tmp, target)
+    if os.path.exists(target):
+        backup_dir = os.path.join(os.path.dirname(os.path.dirname(target)), 'skill-backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        backup = os.path.join(backup_dir, os.path.basename(target) + '-' + stamp)
+        os.replace(target, backup)
+    os.replace(tmp, target)
     tmp = None
-    print('Skill Bundle 已校验并安装:', target)
+    print('Skill Bundle 已校验并安装/更新:', target)
+    if backup: print('旧版 Skill 备份:', backup)
 except Exception as e:
+    if backup and not os.path.exists(target) and os.path.exists(backup):
+        os.replace(backup, target)
     print('Skill 安装失败:', e, file=sys.stderr)
     sys.exit(1)
 finally:

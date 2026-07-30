@@ -407,10 +407,10 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 
 ### 网页「Agent 接入中心」
 
-登录后访问顶部「Agent 接入」标签，提供 Codex、Cursor、通用 MCP Client 三张卡，每张一个「一键复制安装指令」按钮：
+登录后访问顶部「Agent 接入」标签，提供 Codex、Cursor、通用 MCP Client 三张卡，每张一个「一键复制安装或更新指令」按钮：
 
 - 复制内容含真实 Bearer Token；通过 `GET /api/agent/install`（带 Cookie）动态生成，响应头 `Cache-Control: no-store`。
-- Codex 指令：`launchctl setenv SHAK_PMO_MCP_TOKEN "<token>"`（或 `export SHAK_PMO_MCP_TOKEN="<token>"`），然后 `codex mcp add shak-project-portfolio-governance --url https://pmo.pmoforms.com/mcp --bearer-token-env-var SHAK_PMO_MCP_TOKEN`；必须完全退出并重开 Codex Desktop；不得使用独立 `--bearer-token` 或 `--header`。
+- Codex 指令：写入 `SHAK_PMO_MCP_TOKEN` 后先读取同名 MCP；目标 URL、Bearer 环境变量和启用状态均一致时跳过，不一致时仅替换 `shak-project-portfolio-governance` 这一个条目，不影响其它 MCP；必须完全退出并重开 Codex Desktop；不得使用独立 `--bearer-token` 或 `--header`。
 - Cursor 指令：Python 脚本安全合并 `~/.cursor/mcp.json`（保留其它 MCP），写入 `headers.Authorization`；下载 `.mdc` Rule。
 - 通用 MCP Client：标准 Streamable HTTP + Authorization Header + Manifest/Skill 校验步骤。
 - URL、manifest、版本号全部来自 `/api/agent/config`（公共）；Token 仅在登录会话内由 `/api/agent/install` 注入。

@@ -27,7 +27,7 @@ mcpUrl: https://pmo.pmoforms.com/mcp
 - 标准 Streamable HTTP 端点：`POST https://pmo.pmoforms.com/mcp`
 - 鉴权：`Authorization: Bearer <token>`，缺失/错误 → `401` JSON-RPC 错误。
 - Token 由系统管理员在网页登录后从「Agent 接入中心」一键复制：
-  - **Codex**：先用 `launchctl setenv SHAK_PMO_MCP_TOKEN '<token>'` 写入环境变量，再用 `codex mcp add shak-project-portfolio-governance --url https://pmo.pmoforms.com/mcp --bearer-token-env-var SHAK_PMO_MCP_TOKEN` 注册。**必须完全退出 Codex Desktop 并重开**，新的 MCP 会话才会读到该环境变量。
+  - **Codex**：先用 `launchctl setenv SHAK_PMO_MCP_TOKEN '<token>'` 写入环境变量；安装文案会先读取同名 MCP，目标配置一致则跳过，不一致才仅替换 `shak-project-portfolio-governance` 这一个条目。**必须完全退出 Codex Desktop 并重开**，新的 MCP 会话才会读到该环境变量。
   - **Cursor**：安全合并 `~/.cursor/mcp.json`，写入 `headers.Authorization: Bearer <token>`。
   - **通用 MCP Client**：直接发送 `Authorization: Bearer <token>` Header。
 - **不存在 `--bearer-token <token>` / `--header` 等独立 CLI flag**；Codex 仅接受 `--bearer-token-env-var <ENV_VAR_NAME>`。

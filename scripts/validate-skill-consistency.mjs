@@ -163,6 +163,10 @@ function run() {
     /launchctl\s+setenv\s+SHAK_PMO_MCP_TOKEN/.test(indexContent));
   check('C3c. /api/agent/install 含 codex mcp add',
     /codex\s+mcp\s+add/.test(indexContent));
+  check('C3d. /api/agent/install 先读取已有 MCP，再按需只更新同名配置',
+    /codex\s+mcp\s+get[\s\S]*?codex\s+mcp\s+remove[\s\S]*?codex\s+mcp\s+add/.test(indexContent));
+  check('C3e. Codex Skill 更新采用 skills 目录外备份与原子切换',
+    /skill-backups/.test(indexContent) && /os\.replace\(tmp, target\)/.test(indexContent));
 
   // ===== C4: manifest.json SHA-256 与实际文件一致 =====
   let manifest;
