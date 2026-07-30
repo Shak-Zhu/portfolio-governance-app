@@ -28,12 +28,20 @@ import {
   verifyLoginCredentials,
   verifySession,
 } from './auth';
+import {
+  createBackup,
+  listBackups,
+  restoreBackup,
+  runScheduledBackup,
+} from './lib/backup';
 
 // ==================== Worker Env ====================
 interface Env {
   DB: D1Database;
   BACKUPS: R2Bucket;
   ASSETS: Fetcher;
+  // 隔离恢复演练库（仅本地/QC 环境绑定；生产必须由 Codex 在 PM/QC 通过后创建并填写）
+  RESTORE_DRILL_DB?: D1Database;
   SHAK_PMO_WEB_LOGIN_EMAIL?: string;
   SHAK_PMO_WEB_LOGIN_PASSWORD?: string;
   SHAK_PMO_SESSION_SECRET?: string;
@@ -715,6 +723,69 @@ function defaultEndDate(): string {
   return d.toISOString().split('T')[0];
 }
 
+// ==================== 备份管理 API（WP-008）====================
+// 全部需要登录会话保护；无任何公开端点。
+
+// 列出最近备份
+app.get('/api/backups', async (c) => {
+  try {
+    const entries = await listBackups(c.env.BACKUPS);
+    // 只返回元数据，不返回表内容
+    return Response.json(entries.map(e => ({
+      key: e.key,
+      size: e.size,
+      createdAt: e.createdAt,
+      contentSha256: e.contentSha256,
+    })));
+  } catch (e) { return handleError(e); }
+});
+
+// 备份就绪状态（WP-008 L2：告知 UI 隔离恢复库是否可用）
+app.get('/api/backups/status', async (c) => {
+  // 受 /api/* 中间件保护，未登录返回 401
+  // 不泄漏 D1 ID、数据库名称、secret 或 R2 内容
+  const available = !!c.env.RESTORE_DRILL_DB;
+  return Response.json({ restoreDrillAvailable: available }, { headers: noStoreHeaders() });
+});
+
+// 手动触发一次备份
+app.post('/api/backups', async (c) => {
+  try {
+    const { manifest, key } = await createBackup(c.env.DB, c.env.BACKUPS);
+    return Response.json({
+      ok: true,
+      key,
+      createdAt: manifest.createdAt,
+      contentSha256: manifest.contentSha256,
+      tableSummaries: manifest.tableSummaries,
+    }, { status: 201, headers: noStoreHeaders() });
+  } catch (e) { return handleError(e); }
+});
+
+// 恢复演练（仅恢复到隔离 D1 RESTORE_DRILL_DB，绝不覆盖生产）
+// 唯一恢复目标：代码中显式固定的 env.RESTORE_DRILL_DB
+app.post('/api/backups/restore', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({})) as { key?: string };
+    if (!body.key) return Response.json({ error: 'backup key 不能为空' }, { status: 400, headers: noStoreHeaders() });
+
+    // 唯一恢复目标：env.RESTORE_DRILL_DB
+    // 禁止通过请求体传 targetDbBinding，禁止动态索引 env[用户输入]
+    const drillDb = c.env.RESTORE_DRILL_DB;
+    if (!drillDb) {
+      return Response.json({
+        error: '恢复演练隔离库尚未由管理员配置（RESTORE_DRILL_DB 未绑定）',
+      }, { status: 503, headers: noStoreHeaders() });
+    }
+
+    const result = await restoreBackup(c.env.BACKUPS, body.key, drillDb);
+    return Response.json({ ok: true, ...result }, { headers: noStoreHeaders() });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return Response.json({ error: msg }, { status: 400, headers: noStoreHeaders() });
+  }
+});
+
 // API 兜底：未匹配的 /api/* 返回 404 JSON
 app.all('/api/*', (c) => {
   return Response.json({ error: '接口不存在' }, { status: 404, headers: noStoreHeaders() });
@@ -765,5 +836,16 @@ export default {
     }
     // 其它：Hono 默认处理
     return app.fetch(request, env, ctx);
+  },
+
+  // 每天 UTC 03:00 由 wrangler.toml cron 触发一次逻辑备份
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    const result = await runScheduledBackup(env);
+    if (!result.ok) {
+      // cron 失败不抛异常（wrangler 会记录日志），但记录到控制台
+      console.error('[scheduled] R2 备份失败:', result.error);
+    } else {
+      console.log('[scheduled] R2 备份成功:', result.key);
+    }
   },
 };

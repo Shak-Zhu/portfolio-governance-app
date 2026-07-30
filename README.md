@@ -308,6 +308,31 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 2. **后代完成检查**：归档前必须验证所有后代项目均已完成
 3. **整体归档**：父项目归档时，所有后代项目一并归档
 
+## 备份管理（WP-008）
+
+系统提供每日自动逻辑备份与恢复演练能力，**绝不覆盖生产 D1**。
+
+### 自动备份
+
+- Worker `scheduled()` 每天 UTC 03:00 自动触发，由 `wrangler.toml` cron 配置。
+- 备份覆盖 6 张业务表：`portfolios`、`projects`、`stages`、`steps`、`project_links`、`audit_events`。
+- 备份格式为 JSON，含：`schemaVersion`、`createdAt`、逐表行数摘要、逐表 SHA-256、整体内容 SHA-256。
+- R2 key 格式：`backups/YYYY-MM-DD/<timestamp>.json`。
+- 每次成功后保留最近 30 份，超出后自动删除最旧备份。
+
+### 恢复演练
+
+- 登录后访问顶部「备份管理」标签，可查看备份列表、手动触发备份、执行恢复演练。
+- 恢复演练仅恢复到隔离/测试 D1（如 `TEST_DB`），**严禁覆盖生产 D1**。
+- 演练验证：JSON 结构、`contentSha256`、表存在、逐表行数、逐表 SHA-256。
+- 生产数据恢复需由管理员手动操作。
+
+### 备份 API（需登录）
+
+- `GET /api/backups` — 列出最近备份（key、size、createdAt、contentSha256）
+- `POST /api/backups` — 手动触发一次备份
+- `POST /api/backups/restore` — 执行恢复演练（仅隔离 D1）
+
 ## Stage 规则
 
 1. **被项目使用的 Stage 禁止删除**：包括活动项目和归档项目

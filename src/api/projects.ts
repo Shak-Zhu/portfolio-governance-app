@@ -302,7 +302,9 @@ export async function completeProject(
   return getProject(db, id);
 }
 
-// 获取项目的统计信息
+// 获取项目的统计信息（仅统计顶级项目：parent_id IS NULL）
+// 子项目仍在项目主数据、甘特、归档明细和所有 list_* 结果中显示，
+// 只是不计入首页四项组合 KPI 卡。
 export async function getProjectStats(
   db: D1Database,
   portfolioId: string
@@ -314,16 +316,18 @@ export async function getProjectStats(
 }> {
   const stats = await db
     .prepare(`
-      SELECT 
+      SELECT
         COUNT(*) as total,
         SUM(CASE WHEN is_archived = 0 AND status = 'active' THEN 1 ELSE 0 END) as active,
         SUM(CASE WHEN is_archived = 0 AND status = 'completed' THEN 1 ELSE 0 END) as completed,
         SUM(CASE WHEN is_archived = 1 THEN 1 ELSE 0 END) as archived
-      FROM projects WHERE portfolio_id = ?
+      FROM projects
+      WHERE portfolio_id = ?
+        AND parent_id IS NULL
     `)
     .bind(portfolioId)
     .first<{ total: number; active: number; completed: number; archived: number }>();
-  
+
   return {
     total: stats?.total || 0,
     active: stats?.active || 0,

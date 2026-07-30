@@ -87,6 +87,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupPortfolioDialog();
   setupStageDialog();
   setupSessionBox();
+  setupBackupControls();
 
   // 第一步：检查登录态；未登录直接去 /login
   try {
@@ -169,6 +170,7 @@ function setupTabs() {
       else if (tab.dataset.view === 'data') loadProjects();
       else if (tab.dataset.view === 'archive') loadArchive();
       else if (tab.dataset.view === 'agent') loadAgentCenter();
+      else if (tab.dataset.view === 'backups') loadBackups();
     });
   });
 }
@@ -1036,6 +1038,192 @@ async function loadStages() {
   } catch (e) {
     console.error('加载 Stage 失败:', e);
   }
+}
+
+// ========== 备份状态（WP-008 L2） ==========
+
+/**
+ * 从服务端获取隔离恢复库就绪状态。
+ * false：禁用演练按钮，显示"等待管理员配置隔离恢复库"。
+ * true：允许选择备份并执行演练。
+ */
+async function loadBackupStatus() {
+  const drillBtn = document.getElementById('drillRestoreBtn');
+  const container = document.getElementById('backupList');
+
+  try {
+    const status = await api('/backups/status');
+    restoreDrillAvailable = !!status.restoreDrillAvailable;
+  } catch {
+    restoreDrillAvailable = false;
+  }
+
+  if (drillBtn) {
+    if (!restoreDrillAvailable) {
+      drillBtn.disabled = true;
+      drillBtn.title = '等待管理员配置隔离恢复库';
+    } else {
+      // 有可用备份时才启用
+      if (selectedBackupKey) {
+        drillBtn.disabled = false;
+        drillBtn.title = '';
+      }
+    }
+  }
+
+  if (container && !restoreDrillAvailable) {
+    // 在备份列表上方显示警告
+    const existingWarning = container.parentElement.querySelector('.drill-warning');
+    if (!existingWarning) {
+      const warning = document.createElement('div');
+      warning.className = 'drill-warning';
+      warning.innerHTML = '<strong>⚠ 恢复演练已禁用：</strong>隔离恢复库尚未由管理员配置（RESTORE_DRILL_DB 未绑定）。请联系管理员完成配置后再执行恢复演练。';
+      container.parentElement.insertBefore(warning, container);
+    }
+  }
+}
+let selectedBackupKey = null;
+let restoreDrillAvailable = false;
+
+function setupBackupControls() {
+  document.getElementById('refreshBackupsBtn')?.addEventListener('click', loadBackups);
+  document.getElementById('createBackupBtn')?.addEventListener('click', createBackup);
+  document.getElementById('drillRestoreBtn')?.addEventListener('click', runDrillRestore);
+}
+
+async function loadBackups() {
+  const container = document.getElementById('backupList');
+  const drillBtn = document.getElementById('drillRestoreBtn');
+  if (!container) return;
+
+  container.innerHTML = '<div class="loading">正在加载备份列表...</div>';
+  selectedBackupKey = null;
+  if (drillBtn) drillBtn.disabled = true;
+
+  // 获取隔离恢复库就绪状态
+  await loadBackupStatus();
+
+  try {
+    const backups = await api('/backups');
+
+    if (backups.length === 0) {
+      container.innerHTML = '<div class="empty">暂无备份记录。每天 UTC 03:00 会自动触发首次备份。</div>';
+      return;
+    }
+
+    container.innerHTML = backups.map(b => `
+      <div class="backup-item${selectedBackupKey === b.key ? ' selected' : ''}" data-key="${b.key}">
+        <div class="backup-item-main">
+          <span class="backup-key">${b.key}</span>
+          <span class="backup-meta">
+            ${b.createdAt ? new Date(b.createdAt).toLocaleString('zh-CN') : '未知时间'}
+            · ${formatBytes(b.size || 0)}
+            · SHA: ${(b.contentSha256 || '').slice(0, 12)}...
+          </span>
+        </div>
+        <button class="backup-select-btn" data-key="${b.key}">选择</button>
+      </div>
+    `).join('');
+
+    // 添加选择事件
+    container.querySelectorAll('.backup-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        if (e.target.classList.contains('backup-select-btn')) {
+          container.querySelectorAll('.backup-item').forEach(i => i.classList.remove('selected'));
+          item.classList.add('selected');
+          selectedBackupKey = item.dataset.key;
+          if (drillBtn) drillBtn.disabled = false;
+        }
+      });
+    });
+
+  } catch (e) {
+    container.innerHTML = `<div class="error">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function createBackup() {
+  const btn = document.getElementById('createBackupBtn');
+  const container = document.getElementById('backupList');
+  if (!btn || !container) return;
+
+  btn.disabled = true;
+  btn.textContent = '备份中...';
+  container.innerHTML = '<div class="loading">正在创建备份...</div>';
+
+  try {
+    const result = await api('/backups', { method: 'POST' });
+    container.innerHTML = `<div class="success">备份成功！Key: ${result.key}<br>SHA-256: ${result.contentSha256}</div>`;
+    // 延迟刷新列表
+    setTimeout(loadBackups, 1500);
+  } catch (e) {
+    container.innerHTML = `<div class="error">备份失败: ${e.message}</div>`;
+    btn.disabled = false;
+    btn.textContent = '立即备份';
+  }
+}
+
+async function runDrillRestore() {
+  if (!selectedBackupKey) {
+    alert('请先选择一个备份');
+    return;
+  }
+
+  // 确认隔离库已就绪
+  if (!restoreDrillAvailable) {
+    alert('隔离恢复库尚未由管理员配置，无法执行恢复演练');
+    return;
+  }
+
+  // 确认恢复演练只能恢复到隔离库
+  if (!confirm(`确定执行恢复演练？\n备份: ${selectedBackupKey}\n\n演练将恢复到隔离 D1，绝不覆盖生产数据。`)) {
+    return;
+  }
+
+  const btn = document.getElementById('drillRestoreBtn');
+  const container = document.getElementById('backupList');
+  if (!btn || !container) return;
+
+  btn.disabled = true;
+  btn.textContent = '恢复演练中...';
+  container.innerHTML = '<div class="loading">正在执行恢复演练（恢复到隔离 D1）...</div>';
+
+  try {
+    // 恢复目标固定为隔离 D1（RESTORE_DRILL_DB），前端不传 targetDbBinding
+    const result = await api('/backups/restore', {
+      method: 'POST',
+      body: { key: selectedBackupKey }
+    });
+
+    const tables = Object.entries(result.tableSummaries || {})
+      .map(([t, s]) => `<li>${t}: ${s.rows} 行</li>`)
+      .join('');
+
+    container.innerHTML = `
+      <div class="success">
+        <h4>恢复演练完成</h4>
+        <p>备份已恢复到隔离 D1（RESTORE_DRILL_DB）。</p>
+        <p>验证结果：${result.verified ? '通过' : '未通过'}</p>
+        <h5>各表行数摘要：</h5>
+        <ul>${tables}</ul>
+      </div>
+    `;
+  } catch (e) {
+    // 503 = 隔离库未配置
+    if (e.message && e.message.includes('隔离库')) {
+      container.innerHTML = `<div class="error">${e.message}</div>`;
+    } else {
+      container.innerHTML = `<div class="error">恢复演练失败: ${e.message}</div>`;
+    }
+    btn.disabled = false;
+    btn.textContent = '执行恢复演练';
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 // ========== 全局函数 ==========

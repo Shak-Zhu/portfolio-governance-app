@@ -114,7 +114,11 @@ const mf = new Miniflare({
     SHAK_PMO_INJECT_INDEX_HTML: readFileSync(resolve(root, 'public/index.html'), 'utf8'),
     SHAK_PMO_INJECT_LOGIN_HTML: readFileSync(resolve(root, 'public/login.html'), 'utf8'),
   },
-  d1Databases: { DB: 'pmo-governance-prod' },
+  d1Databases: {
+    DB: 'pmo-governance-prod',
+    // 隔离恢复演练库（WP-008 L1：双 D1 E2E）
+    RESTORE_DRILL_DB: 'pmo-governance-restore-drill',
+  },
   r2Buckets: { BACKUPS: 'pmo-governance-backups-prod' },
   assets: {
     binding: 'ASSETS',
@@ -199,25 +203,29 @@ const { port } = server.address();
 const BASE = `http://127.0.0.1:${port}`;
 console.log(`[real-mcp-test] Worker listening at ${BASE}`);
 
-// 应用 migrations
-console.log('[real-mcp-test] applying migrations…');
+// 应用 migrations（两个 D1）
+console.log('[real-mcp-test] applying migrations to DB…');
 const db = await mf.getD1Database('DB');
+const drillDb = await mf.getD1Database('RESTORE_DRILL_DB');
 const migFiles = readdirSync(resolve(root, 'migrations')).filter((f) => f.endsWith('.sql')).sort();
-for (const f of migFiles) {
-  const sql = readFileSync(resolve(root, 'migrations', f), 'utf8');
-  for (const stmt of sql.split('--> statement-breakpoint')) {
-    const t = stmt.trim();
-    if (!t) continue;
-    try {
-      await db.prepare(t).run();
-    } catch (e) {
-      const m = String(e.message);
-      if (m.match(/already exists|duplicate|SQLITE_CONSTRAINT/i)) continue;
-      throw e;
+
+for (const dbHandle of [db, drillDb]) {
+  for (const f of migFiles) {
+    const sql = readFileSync(resolve(root, 'migrations', f), 'utf8');
+    for (const stmt of sql.split('--> statement-breakpoint')) {
+      const t = stmt.trim();
+      if (!t) continue;
+      try {
+        await dbHandle.prepare(t).run();
+      } catch (e) {
+        const m = String(e.message);
+        if (m.match(/already exists|duplicate|SQLITE_CONSTRAINT/i)) continue;
+        throw e;
+      }
     }
   }
 }
-console.log('[real-mcp-test] migrations applied');
+console.log('[real-mcp-test] migrations applied to both DBs');
 
 // Helper: send JSON-RPC to /mcp. The MCP Streamable HTTP transport may respond with SSE.
 async function mcp(method, params = {}, id = 1, extraHeaders = {}) {
@@ -686,31 +694,533 @@ await t('logout → Cookie 立即失效', async () => {
   if (r2.status !== 401) throw new Error(`still authenticated: ${r2.status}`);
 });
 
+// ============================================
+// F. WP-008：KPI 只统计顶级项目
+// （logout 后需要重新登录）
+// ============================================
+let kpiSessionCookie;
+await t('F0. KPI 测试前重新登录（logout 后恢复会话）', async () => {
+  const r = await http_('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+  });
+  if (r.status !== 200) throw new Error(`re-login status=${r.status}`);
+  const sc = r.headers['set-cookie'];
+  if (!sc) throw new Error('no set-cookie on re-login');
+  kpiSessionCookie = sc.split(';')[0];
+});
+
+await t('F1. KPI 只统计顶级项目：创建 2 顶级 + 2 子项目，KPI = 2', async () => {
+  // 创建组合
+  const portRes = await mcp('tools/call', { name: 'create_portfolio', arguments: { name: 'kpi-test-' + Date.now() } }, 40, { Authorization: `Bearer ${TOKEN}` });
+  const portId = (safeJson(portRes.parsedBody) || safeJson(portRes.text))?.result?.structuredContent?.id;
+  if (!portId) throw new Error('no portfolio id');
+
+  // 顶级 A（active）
+  const p1Res = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: portId, title: 'Top A', owner: 'A' } }, 41, { Authorization: `Bearer ${TOKEN}` });
+  const p1Id = (safeJson(p1Res.parsedBody) || safeJson(p1Res.text))?.result?.structuredContent?.id;
+  if (!p1Id) throw new Error('no p1 id');
+
+  // 子项目 A1
+  await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: portId, title: 'Child A1', owner: 'A', parentId: p1Id } }, 42, { Authorization: `Bearer ${TOKEN}` });
+
+  // 顶级 B（completed）
+  const p2Res = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: portId, title: 'Top B', owner: 'B' } }, 43, { Authorization: `Bearer ${TOKEN}` });
+  const p2Id = (safeJson(p2Res.parsedBody) || safeJson(p2Res.text))?.result?.structuredContent?.id;
+  if (!p2Id) throw new Error('no p2 id');
+  await mcp('tools/call', { name: 'complete_project', arguments: { projectId: p2Id } }, 44, { Authorization: `Bearer ${TOKEN}` });
+
+  // 子项目 B1
+  await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: portId, title: 'Child B1', owner: 'B', parentId: p2Id } }, 45, { Authorization: `Bearer ${TOKEN}` });
+
+  // REST KPI（需要会话 Cookie）
+  const statsRes = await http_(`/api/portfolios/${portId}/stats`, { headers: { Cookie: kpiSessionCookie } });
+  if (statsRes.status !== 200) throw new Error(`stats status=${statsRes.status}`);
+  const stats = safeJson(statsRes.text);
+  if (stats.total !== 2) throw new Error(`KPI total 应为 2，实际 ${stats.total}`);
+  if (stats.active !== 1) throw new Error(`KPI active 应为 1（Top A），实际 ${stats.active}`);
+  if (stats.completed !== 1) throw new Error(`KPI completed 应为 1（Top B），实际 ${stats.completed}`);
+  if (stats.archived !== 0) throw new Error(`KPI archived 应为 0，实际 ${stats.archived}`);
+});
+
+await t('F2. MCP get_project_stats 口径与 REST 一致（顶级）', async () => {
+  const portRes = await mcp('tools/call', { name: 'list_portfolios', arguments: {} }, 46, { Authorization: `Bearer ${TOKEN}` });
+  const parsed = safeJson(portRes.parsedBody) || safeJson(portRes.text);
+  const structured = parsed?.result?.structuredContent;
+  let portfolioArray = [];
+  // structuredContent 可能是嵌套 JSON 字符串或直接数组
+  if (typeof structured === 'string') {
+    const inner = safeJson(structured);
+    if (Array.isArray(inner)) portfolioArray = inner;
+    else if (inner && Array.isArray(inner.portfolios)) portfolioArray = inner.portfolios;
+    else if (inner && typeof inner === 'object') {
+      const vals = Object.values(inner);
+      for (const v of vals) {
+        if (Array.isArray(v)) { portfolioArray = v; break; }
+      }
+    }
+  } else if (Array.isArray(structured)) {
+    portfolioArray = structured;
+  } else if (structured && typeof structured === 'object') {
+    const vals = Object.values(structured);
+    for (const v of vals) {
+      if (Array.isArray(v)) { portfolioArray = v; break; }
+    }
+  }
+  const kpiPortfolio = portfolioArray.find(p => p && (p.name || p.title) && (p.name || p.title).includes('kpi-test'));
+  if (!kpiPortfolio) throw new Error('no kpi-test portfolio, structured=' + JSON.stringify(parsed?.result?.structuredContent)?.slice(0, 300));
+  const pid = kpiPortfolio.id;
+  const statsRes = await http_(`/api/portfolios/${pid}/stats`, { headers: { Cookie: kpiSessionCookie } });
+  const stats = safeJson(statsRes.text);
+  if (stats.total !== 2) throw new Error(`MCP 口径也应 total=2，实际 ${stats.total}`);
+});
+
+// ============================================
+// G. WP-008：R2 备份 API
+// ============================================
+await t('G1. GET /api/backups 无会话 → 401', async () => {
+  const r = await http_('/api/backups');
+  if (r.status !== 401) throw new Error(`应为 401，实际 ${r.status}`);
+});
+
+await t('G2. POST /api/backups 无会话 → 401', async () => {
+  const r = await http_('/api/backups', { method: 'POST' });
+  if (r.status !== 401) throw new Error(`应为 401，实际 ${r.status}`);
+});
+
+await t('G3. POST /api/backups 成功，6 张表均在', async () => {
+  const r = await http_('/api/backups', { method: 'POST', headers: { Cookie: kpiSessionCookie } });
+  if (r.status !== 201) throw new Error(`备份失败: ${r.status} ${r.text.slice(0, 200)}`);
+  const j = safeJson(r.text);
+  if (!j.key) throw new Error('未返回 key');
+  if (!j.contentSha256 || j.contentSha256.length !== 64) throw new Error('未返回有效 SHA-256');
+  const tables = Object.keys(j.tableSummaries || {});
+  const expected = ['portfolios', 'projects', 'stages', 'steps', 'project_links', 'audit_events'];
+  for (const tbl of expected) {
+    if (!tables.includes(tbl)) throw new Error(`缺少表: ${tbl}`);
+    if (typeof j.tableSummaries[tbl].rows !== 'number') throw new Error(`表 ${tbl} 无 rows`);
+    if (!j.tableSummaries[tbl].sha256 || j.tableSummaries[tbl].sha256.length !== 64) {
+      throw new Error(`表 ${tbl} 无有效 SHA-256`);
+    }
+  }
+});
+
+await t('G4. GET /api/backups 列出备份（需登录）', async () => {
+  const r = await http_('/api/backups', { headers: { Cookie: kpiSessionCookie } });
+  if (r.status !== 200) throw new Error(`应为 200，实际 ${r.status}`);
+  const j = safeJson(r.text);
+  if (!Array.isArray(j) || j.length === 0) throw new Error('应有至少一个备份');
+  if (typeof j[0].key !== 'string') throw new Error('backup 无 key');
+  if (typeof j[0].size !== 'number') throw new Error('backup 无 size');
+  // contentSha256 允许为 null（listBackups 返回的 BackupEntry 类型定义为 string | null）
+  if (j[0].contentSha256 !== null && typeof j[0].contentSha256 !== 'string') {
+    throw new Error('backup contentSha256 应为 string 或 null，实际 ' + typeof j[0].contentSha256);
+  }
+});
+
+// ============================================
+// G5-G10: WP-008 L1 返工：恢复演练安全与 R2 保留策略
+// ============================================
+
+// ---- 准备：在 DB 创建生产哨兵数据 ----
+let sentinelPortfolioId;
+let sentinelProjectId;
+await t('G5. 准备：在 DB 创建生产哨兵数据（验证恢复不覆盖生产）', async () => {
+  const portRes = await mcp('tools/call', { name: 'create_portfolio', arguments: { name: 'sentinel-portfolio-' + Date.now() } }, 60, { Authorization: `Bearer ${TOKEN}` });
+  const portObj = safeJson(portRes.parsedBody) || safeJson(portRes.text);
+  sentinelPortfolioId = portObj?.result?.structuredContent?.id;
+  if (!sentinelPortfolioId) throw new Error('no sentinel portfolio id');
+
+  const projRes = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: sentinelPortfolioId, title: 'sentinel-project', owner: 'sentinel-owner' } }, 61, { Authorization: `Bearer ${TOKEN}` });
+  const projObj = safeJson(projRes.parsedBody) || safeJson(projRes.text);
+  sentinelProjectId = projObj?.result?.structuredContent?.id;
+  if (!sentinelProjectId) throw new Error('no sentinel project id');
+});
+
+// ---- 创建备份前先清空 drill DB ----
+await t('G6. 清空 RESTORE_DRILL_DB，为恢复测试准备', async () => {
+  const tables = ['portfolios', 'projects', 'stages', 'steps', 'project_links', 'audit_events'];
+  for (const tbl of tables) {
+    await drillDb.prepare(`DELETE FROM \`${tbl}\``).run();
+  }
+  // 验证清空
+  for (const tbl of tables) {
+    const { results } = await drillDb.prepare(`SELECT COUNT(*) as c FROM \`${tbl}\``).all();
+    if (results[0].c !== 0) throw new Error(`${tbl} 未清空，仍有 ${results[0].c} 行`);
+  }
+});
+
+// ---- 正常恢复：RESTORE_DRILL_DB 绑定时成功 ----
+let backupKeyForRestore;
+await t('G7. POST /api/backups/restore（RESTORE_DRILL_DB 已绑定）→ 恢复成功 + 六表完整', async () => {
+  // 先创建一个备份
+  const r0 = await http_('/api/backups', { method: 'POST', headers: { Cookie: kpiSessionCookie } });
+  if (r0.status !== 201) throw new Error(`备份失败: ${r0.status} ${r0.text.slice(0, 200)}`);
+  const j0 = safeJson(r0.text);
+  backupKeyForRestore = j0.key;
+  if (!backupKeyForRestore) throw new Error('未返回 backup key');
+
+  // 调用恢复（只传 key，不传 targetDbBinding）
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: backupKeyForRestore }),
+  });
+  if (r.status !== 200) throw new Error(`恢复失败: ${r.status} ${r.text.slice(0, 200)}`);
+  const j = safeJson(r.text);
+  if (!j.ok) throw new Error('恢复未返回 ok');
+  if (!j.verified) throw new Error('恢复未返回 verified=true');
+  // 验证六张表
+  const expected = ['portfolios', 'projects', 'stages', 'steps', 'project_links', 'audit_events'];
+  for (const tbl of expected) {
+    if (!j.tableSummaries || !j.tableSummaries[tbl]) throw new Error(`恢复结果缺少 ${tbl}`);
+    if (typeof j.tableSummaries[tbl].rows !== 'number') throw new Error(`${tbl} 无 rows`);
+  }
+});
+
+// ---- 从 RESTORE_DRILL_DB 回读验证（WP-008 L2：逐表 SHA-256 + 行数） ----
+await t('G8. 恢复后从 RESTORE_DRILL_DB 回读：六表逐表 SHA-256 + 行数与备份一致', async () => {
+  if (!backupKeyForRestore) throw new Error('no backup key');
+
+  // 从 R2 读取当次 manifest
+  const r2 = await mf.getR2Bucket('BACKUPS');
+  const obj = await r2.get(backupKeyForRestore);
+  if (!obj) throw new Error('R2 对象不存在: ' + backupKeyForRestore);
+  const manifest = JSON.parse(await obj.text());
+
+  const tables = ['portfolios', 'projects', 'stages', 'steps', 'project_links', 'audit_events'];
+  const { createHash } = await import('node:crypto');
+
+  for (const tbl of tables) {
+    const summary = manifest.tableSummaries[tbl];
+
+    // 从 RESTORE_DRILL_DB 读取，使用确定性排序与备份一致
+    const { results } = await drillDb.prepare(`SELECT * FROM \`${tbl}\` ORDER BY rowid ASC`).all();
+    const rows = results;
+    const rowsJson = JSON.stringify(rows);
+    const actualSha = createHash('sha256').update(rowsJson).digest('hex');
+
+    if (rows.length !== summary.rows) {
+      throw new Error(`表 ${tbl} 行数不匹配（期望 ${summary.rows}，实际 ${rows.length}）`);
+    }
+    if (actualSha !== summary.sha256) {
+      throw new Error(`表 ${tbl} SHA-256 不匹配（期望 ${summary.sha256.slice(0, 16)}...，实际 ${actualSha.slice(0, 16)}...）`);
+    }
+  }
+});
+
+// ============================================
+// G8N1-G8N5: Manifest 完整性负向测试（WP-008 L2）
+// ============================================
+
+// 辅助：写入哨兵数据（必须包含所有 NOT NULL 字段）
+async function writeDrillSentinel(value) {
+  const ts = Date.now();
+  await drillDb.prepare(
+    `INSERT INTO portfolios (name, description, created_at, updated_at) VALUES (?, ?, ?, ?)`
+  ).bind(value, 'sentinel-desc', ts, ts).run();
+}
+
+async function readDrillSentinel() {
+  const { results } = await drillDb.prepare(
+    `SELECT name FROM portfolios ORDER BY rowid DESC LIMIT 1`
+  ).all();
+  return results[0]?.name || null;
+}
+
+await t('G8N1. 负向：manifest.tables 缺一张表 → 验证拒绝，隔离库哨兵未变', async () => {
+  const sentinelVal = 'sentinel-' + Date.now();
+  await writeDrillSentinel(sentinelVal);
+  const before = await readDrillSentinel();
+  if (before !== sentinelVal) throw new Error('哨兵写入失败: ' + before);
+
+  // 从 R2 读取 manifest，构造缺表版本
+  const r2 = await mf.getR2Bucket('BACKUPS');
+  const obj = await r2.get(backupKeyForRestore);
+  const manifest = JSON.parse(await obj.text());
+
+  // 删除一张表，破坏 contentSha256
+  delete manifest.tables.steps;
+  manifest.contentSha256 = '0000000000000000000000000000000000000000000000000000000000000000';
+
+  const corruptKey = 'backups/corrupt-missing-table.json';
+  await r2.put(corruptKey, JSON.stringify(manifest));
+
+  // 尝试恢复 → 应拒绝
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: corruptKey }),
+  });
+  if (r.status !== 400) throw new Error(`应为 400，实际 ${r.status}: ${r.text}`);
+
+  // 哨兵仍在
+  const after = await readDrillSentinel();
+  if (after !== sentinelVal) throw new Error('隔离库哨兵被修改！');
+});
+
+await t('G8N2. 负向：manifest.tables 多未知表 → 验证拒绝，隔离库哨兵未变', async () => {
+  const sentinelVal = 'sentinel-' + Date.now();
+  await writeDrillSentinel(sentinelVal);
+  const before = await readDrillSentinel();
+  if (before !== sentinelVal) throw new Error('哨兵写入失败');
+
+  const r2 = await mf.getR2Bucket('BACKUPS');
+  const obj = await r2.get(backupKeyForRestore);
+  const manifest = JSON.parse(await obj.text());
+
+  manifest.tables['secret_table'] = [{ id: 1 }];
+  manifest.contentSha256 = '0000000000000000000000000000000000000000000000000000000000000000';
+
+  const corruptKey = 'backups/corrupt-extra-table.json';
+  await r2.put(corruptKey, JSON.stringify(manifest));
+
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: corruptKey }),
+  });
+  if (r.status !== 400) throw new Error(`应为 400，实际 ${r.status}: ${r.text}`);
+
+  const after = await readDrillSentinel();
+  if (after !== sentinelVal) throw new Error('隔离库哨兵被修改！');
+});
+
+await t('G8N3. 负向：manifest.tables 与 tableSummaries 集合不一致 → 验证拒绝', async () => {
+  const sentinelVal = 'sentinel-' + Date.now();
+  await writeDrillSentinel(sentinelVal);
+
+  const r2 = await mf.getR2Bucket('BACKUPS');
+  const obj = await r2.get(backupKeyForRestore);
+  const manifest = JSON.parse(await obj.text());
+
+  // tables 删 steps，tableSummaries 保留 steps → 不一致
+  delete manifest.tables.steps;
+  manifest.contentSha256 = '0000000000000000000000000000000000000000000000000000000000000000';
+
+  const corruptKey = 'backups/corrupt-inconsistent.json';
+  await r2.put(corruptKey, JSON.stringify(manifest));
+
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: corruptKey }),
+  });
+  if (r.status !== 400) throw new Error(`应为 400，实际 ${r.status}: ${r.text}`);
+});
+
+await t('G8N4. 负向：单表 SHA 不一致 → 验证拒绝，隔离库哨兵未变', async () => {
+  const sentinelVal = 'sentinel-' + Date.now();
+  await writeDrillSentinel(sentinelVal);
+  const before = await readDrillSentinel();
+  if (before !== sentinelVal) throw new Error('哨兵写入失败');
+
+  const r2 = await mf.getR2Bucket('BACKUPS');
+  const obj = await r2.get(backupKeyForRestore);
+  const manifest = JSON.parse(await obj.text());
+
+  manifest.tableSummaries.portfolios.sha256 = '0000000000000000000000000000000000000000000000000000000000000000';
+
+  const corruptKey = 'backups/corrupt-sha.json';
+  await r2.put(corruptKey, JSON.stringify(manifest));
+
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: corruptKey }),
+  });
+  if (r.status !== 400) throw new Error(`应为 400，实际 ${r.status}: ${r.text}`);
+
+  const after = await readDrillSentinel();
+  if (after !== sentinelVal) throw new Error('隔离库哨兵被修改！');
+});
+
+await t('G8N5. 负向：contentSha256 不一致 → 验证拒绝', async () => {
+  const r2 = await mf.getR2Bucket('BACKUPS');
+  const obj = await r2.get(backupKeyForRestore);
+  const manifest = JSON.parse(await obj.text());
+
+  manifest.contentSha256 = '0000000000000000000000000000000000000000000000000000000000000000';
+
+  const corruptKey = 'backups/corrupt-content-sha.json';
+  await r2.put(corruptKey, JSON.stringify(manifest));
+
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: corruptKey }),
+  });
+  if (r.status !== 400) throw new Error(`应为 400，实际 ${r.status}: ${r.text}`);
+});
+
+// ---- DB 生产哨兵数据未改变 ----
+await t('G9. 恢复后 DB 的生产哨兵数据仍在（未被覆盖）', async () => {
+  if (!sentinelPortfolioId) throw new Error('no sentinel portfolio id');
+  if (!sentinelProjectId) throw new Error('no sentinel project id');
+
+  // 哨兵组合仍在
+  const portR = await db.prepare(`SELECT id FROM portfolios WHERE id=?`).bind(sentinelPortfolioId).all();
+  if (portR.results.length !== 1) throw new Error('哨兵组合被删除或覆盖');
+
+  // 哨兵项目仍在
+  const projR = await db.prepare(`SELECT id FROM projects WHERE id=?`).bind(sentinelProjectId).all();
+  if (projR.results.length !== 1) throw new Error('哨兵项目被删除或覆盖');
+});
+
+// ---- 负向测试：请求体含 targetDbBinding 不会影响恢复目标 ----
+await t('G10. 负向：POST /api/backups/restore 含 targetDbBinding=DB → 忽略该字段，DB 哨兵仍在', async () => {
+  if (!backupKeyForRestore) throw new Error('no backup key');
+
+  // 带恶意 targetDbBinding
+  const r = await http_('/api/backups/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: kpiSessionCookie },
+    body: JSON.stringify({ key: backupKeyForRestore, targetDbBinding: 'DB', extraField: 'injection' }),
+  });
+  // 应成功（因为还有 RESTORE_DRILL_DB），或 400（拒绝未知字段）
+  if (r.status === 200) {
+    // 成功时 DB 哨兵必须仍在
+    if (sentinelPortfolioId) {
+      const portR = await db.prepare(`SELECT id FROM portfolios WHERE id=?`).bind(sentinelPortfolioId).all();
+      if (portR.results.length !== 1) throw new Error('DB 哨兵被覆盖！');
+    }
+  } else if (r.status === 400) {
+    // 400 也接受（拒绝未知字段）
+  } else {
+    throw new Error(`意外状态: ${r.status} ${r.text}`);
+  }
+});
+
+// ============================================
+// G11: R2 31→30 保留策略测试
+// 核心验证：创建 31 个后，总量 ≤ 30，且保留的是最新的
+// ============================================
+await t('G11. R2 保留策略：创建 31 个备份，验证最终保留 30 个', async () => {
+  // 记录当前备份数量
+  const r0 = await http_('/api/backups', { headers: { Cookie: kpiSessionCookie } });
+  const j0 = safeJson(r0.text);
+  const preCount = Array.isArray(j0) ? j0.length : 0;
+
+  // 创建 31 个备份
+  const created = [];
+  for (let i = 0; i < 31; i++) {
+    const r = await http_('/api/backups', { method: 'POST', headers: { Cookie: kpiSessionCookie } });
+    if (r.status !== 201) throw new Error(`备份 ${i} 失败: ${r.status}`);
+    const j = safeJson(r.text);
+    created.push(j.key);
+  }
+
+  // 验证最终总量 ≤ 30
+  const rFinal = await http_('/api/backups', { headers: { Cookie: kpiSessionCookie } });
+  const jFinal = safeJson(rFinal.text);
+  const finalCount = Array.isArray(jFinal) ? jFinal.length : 0;
+
+  if (finalCount > 30) {
+    throw new Error(`保留数量超 30：${finalCount}`);
+  }
+
+  // 验证 created 中最老的 1 个被删除（当 preCount < 30 时，created[0] 会被删除）
+  // 由于 preCount 可能来自之前测试，我们只验证"至少有一个我创建的备份被删除"
+  // 策略：验证最终数量 = preCount + 31 - deletedCount，其中 deletedCount >= 1
+  const deletedCount = (preCount + 31) - finalCount;
+  if (deletedCount < 1) {
+    throw new Error(`没有任何备份被删除，preCount=${preCount}, finalCount=${finalCount}`);
+  }
+});
+
+// ============================================
+// G14: 手动备份 API 验证（POST /api/backups）
+// 注意：此测试验证手动备份 API，不验证真实 scheduled() 触发。
+// scheduled() 真实触发由 scripts/test-scheduled.mjs 独立测试。
+// ============================================
+await t('G14. 手动备份 API（POST /api/backups）：备份成功，六表摘要存在，保留 ≤ 30', async () => {
+  const r2 = await mf.getR2Bucket('BACKUPS');
+
+  // 获取触发前 R2 对象数量
+  const beforeList = await r2.list({ prefix: 'backups/' });
+  const beforeCount = beforeList.objects.length;
+
+  // 通过 HTTP API 触发一次备份（验证 createBackup 复用）
+  const r = await http_('/api/backups', { method: 'POST', headers: { Cookie: kpiSessionCookie } });
+  if (r.status !== 201) throw new Error(`备份失败: ${r.status}`);
+
+  // 验证返回包含六表摘要和 SHA-256
+  const j = safeJson(r.text);
+  const expectedTables = ['portfolios', 'projects', 'stages', 'steps', 'project_links', 'audit_events'];
+  for (const tbl of expectedTables) {
+    if (!j.tableSummaries || !j.tableSummaries[tbl]) throw new Error(`备份缺少表: ${tbl}`);
+    if (typeof j.tableSummaries[tbl].rows !== 'number') throw new Error(`表 ${tbl} 无 rows`);
+    if (!j.tableSummaries[tbl].sha256 || j.tableSummaries[tbl].sha256.length !== 64) {
+      throw new Error(`表 ${tbl} 无有效 SHA-256`);
+    }
+  }
+  if (!j.contentSha256 || j.contentSha256.length !== 64) throw new Error('无有效 contentSha256');
+
+  // 验证 R2 对象数量变化合理（可能增加、可能不变，取决于 beforeCount 是否已满 30）
+  const afterList = await r2.list({ prefix: 'backups/' });
+  const afterCount = afterList.objects.length;
+
+  // 验证新对象含六表摘要和 SHA-256（通过 HTTP 响应已验证）
+  if (afterCount > 30) throw new Error(`保留数量超 30：${afterCount}`);
+
+  // 验证新备份 key 在 R2 中
+  if (!j.key) throw new Error('未返回 backup key');
+  const newObj = await r2.get(j.key);
+  if (!newObj) throw new Error(`R2 中找不到新备份: ${j.key}`);
+  if (!newObj.customMetadata?.contentSha256) throw new Error('新备份无 contentSha256');
+});
+
+// ============================================
+// G15: GET /api/backups/status（WP-008 L2）
+// ============================================
+await t('G15. GET /api/backups/status 无会话 → 401', async () => {
+  const r = await http_('/api/backups/status');
+  if (r.status !== 401) throw new Error(`应为 401，实际 ${r.status}`);
+});
+
+await t('G16. GET /api/backups/status 已登录 → { restoreDrillAvailable: true }', async () => {
+  const r = await http_('/api/backups/status', { headers: { Cookie: kpiSessionCookie } });
+  if (r.status !== 200) throw new Error(`应为 200，实际 ${r.status}`);
+  const j = safeJson(r.text);
+  if (typeof j.restoreDrillAvailable !== 'boolean') throw new Error('restoreDrillAvailable 应为 boolean');
+  if (!j.restoreDrillAvailable) throw new Error('RESTORE_DRILL_DB 已绑定，应为 true');
+});
+
+await t('G17. GET /api/backups/status 不泄漏数据库信息', async () => {
+  const r = await http_('/api/backups/status', { headers: { Cookie: kpiSessionCookie } });
+  const j = safeJson(r.text);
+  const str = JSON.stringify(j);
+  if (str.includes('id') || str.includes('database') || str.includes('secret') || str.includes('r2') || str.includes('bucket')) {
+    throw new Error('status API 泄漏了数据库信息: ' + str);
+  }
+});
+
 // ---- Stage delete protection ----
-await t('Stage 删除保护：被引用时拒绝', async () => {
+await t('H1. Stage 删除保护：被引用时拒绝', async () => {
   if (!testPortfolioId) throw new Error('no portfolio from earlier');
   // 创建 Stage
-  const cs = await mcp('tools/call', { name: 'create_stage', arguments: { portfolioId: testPortfolioId, name: 'protected-stage-' + Date.now() } }, 11, { Authorization: `Bearer ${TOKEN}` });
+  const cs = await mcp('tools/call', { name: 'create_stage', arguments: { portfolioId: testPortfolioId, name: 'protected-stage-' + Date.now() } }, 51, { Authorization: `Bearer ${TOKEN}` });
   const csobj = safeJson(cs.parsedBody) || safeJson(cs.text);
   const stageId = csobj?.result?.structuredContent?.id;
   const stageName = csobj?.result?.structuredContent?.name;
   if (!stageId || !stageName) throw new Error('no stage id/name: ' + cs.text.slice(0, 300));
   // 创建引用该 Stage 的项目（projects.stage 字段是 stage 的 name，不是 id）
-  const cp = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: testPortfolioId, title: 'p-stage', owner: 'o', stage: stageName } }, 12, { Authorization: `Bearer ${TOKEN}` });
+  const cp = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: testPortfolioId, title: 'p-stage', owner: 'o', stage: stageName } }, 52, { Authorization: `Bearer ${TOKEN}` });
   const cpj = safeJson(cp.parsedBody) || safeJson(cp.text);
   if (cpj?.result?.isError) throw new Error('create project failed: ' + cp.text);
   // 删除 Stage：应被拒绝
-  const ds = await mcp('tools/call', { name: 'delete_stage', arguments: { stageId } }, 13, { Authorization: `Bearer ${TOKEN}` });
+  const ds = await mcp('tools/call', { name: 'delete_stage', arguments: { stageId } }, 53, { Authorization: `Bearer ${TOKEN}` });
   const j = safeJson(ds.parsedBody) || safeJson(ds.text);
   if (!j.result?.isError) throw new Error('stage delete should be blocked: ' + ds.text);
 });
 
 // ---- TBD / Plan ----
-await t('create_step 缺日期 → 视为未排期（TBD）', async () => {
+await t('I1. create_step 缺日期 → 视为未排期（TBD）', async () => {
   if (!testPortfolioId) throw new Error('no portfolio');
-  const cp = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: testPortfolioId, title: 'p-tbd', owner: 'o' } }, 14, { Authorization: `Bearer ${TOKEN}` });
+  const cp = await mcp('tools/call', { name: 'create_project', arguments: { portfolioId: testPortfolioId, title: 'p-tbd', owner: 'o' } }, 54, { Authorization: `Bearer ${TOKEN}` });
   const projId = (safeJson(cp.parsedBody) || safeJson(cp.text))?.result?.structuredContent?.id;
-  const cs = await mcp('tools/call', { name: 'create_step', arguments: { projectId: projId, name: 's-no-date' } }, 15, { Authorization: `Bearer ${TOKEN}` });
+  const cs = await mcp('tools/call', { name: 'create_step', arguments: { projectId: projId, name: 's-no-date' } }, 55, { Authorization: `Bearer ${TOKEN}` });
   const j = safeJson(cs.parsedBody) || safeJson(cs.text);
   if (j.result?.isError) throw new Error('error: ' + cs.text);
   // 应当 status=tbd

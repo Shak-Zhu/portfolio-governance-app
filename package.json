@@ -11,6 +11,7 @@
     "lint": "eslint src/**/*.ts",
     "test": "node scripts/unit-test.mjs",
     "test:e2e": "node scripts/real-mcp-test.mjs",
+    "test:scheduled": "node scripts/test-scheduled.mjs",
     "db:migrate": "wrangler d1 migrations apply pmo-governance-prod --local",
     "db:init": "wrangler d1 execute pmo-governance-prod --local --file=./drizzle/seed.sql",
     "db:smoke": "node scripts/smoke-test.js",

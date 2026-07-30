@@ -468,3 +468,80 @@ dialog form { padding: 23px; }
   cursor: pointer;
 }
 .session-box button.secondary:hover { background: #fcf0ef; border-color: #f0c2bf; color: #a23a36; }
+
+/* ============ 备份管理视图（WP-008） ============ */
+.backup-list {
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.backup-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.backup-item:last-child { border-bottom: none; }
+.backup-item:hover { background: var(--canvas); }
+.backup-item.selected { background: #eef4fc; border-left: 3px solid var(--blue); }
+.backup-item-main { display: flex; flex-direction: column; gap: 4px; }
+.backup-key { font-size: 13px; font-weight: 600; color: var(--ink); }
+.backup-meta { font-size: 11px; color: var(--muted); }
+.backup-select-btn {
+  padding: 6px 14px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--navy);
+}
+.backup-select-btn:hover { background: var(--blue); color: #fff; border-color: var(--blue); }
+
+.backup-policy,
+.backup-notice {
+  margin: 12px 0;
+  padding: 16px;
+  background: #f4f7fb;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.backup-policy h4,
+.backup-notice h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--ink);
+}
+.backup-policy ul,
+.backup-notice ul {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+.backup-notice {
+  background: #fff8f0;
+  border: 1px solid #f0d8b0;
+}
+.backup-notice ul li { color: #8a5a20; }
+
+.loading, .empty, .success, .error {
+  padding: 16px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.loading { color: var(--muted); background: var(--canvas); }
+.empty { color: var(--muted); text-align: center; padding: 32px; }
+.success { color: #1a6b3f; background: #edfaf3; border: 1px solid #b8e8ce; }
+.success h4 { margin: 0 0 8px; font-size: 14px; }
+.success h5 { margin: 10px 0 6px; font-size: 13px; }
+.success ul { margin: 6px 0 0; padding-left: 18px; }
+.error { color: #a23a36; background: #fcf0ef; border: 1px solid #f0c2bf; }

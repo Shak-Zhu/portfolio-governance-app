@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# 每天 03:00 UTC 自动触发一次逻辑备份（WP-008）
+[triggers]
+crons = ["0 3 * * *"]
+
 # 静态资源目录：非 /api/* 请求由 env.ASSETS 提供
 [assets]
 directory = "./public"
@@ -15,6 +19,12 @@ not_found_handling = "none"
 binding = "DB"
 database_name = "pmo-governance-prod"
 database_id = "abb3c863-7689-40d1-9e69-f5b64b261f9a"
+
+# 隔离恢复演练 D1：仅作为 RESTORE_DRILL_DB 的固定恢复目标，绝不使用生产 DB。
+[[d1_databases]]
+binding = "RESTORE_DRILL_DB"
+database_name = "pmo-governance-restore-drill"
+database_id = "9f98037c-3e69-4bc6-8e65-badae040af26"
 
 [[r2_buckets]]
 binding = "BACKUPS"

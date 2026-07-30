@@ -42,10 +42,10 @@
     </section>
 
     <section class="dashboard-strip">
-      <article><span>当前组合项目数</span><strong id="totalCount">0</strong></article>
-      <article><span>执行中</span><strong id="inProgressCount">0</strong></article>
-      <article><span>已完成，待归档</span><strong id="completeCount">0</strong></article>
-      <article><span>已归档</span><strong id="archivedCount">0</strong></article>
+      <article><span>当前组合总项目（顶级）</span><strong id="totalCount">0</strong></article>
+      <article><span>执行中（顶级）</span><strong id="inProgressCount">0</strong></article>
+      <article><span>已完成，待归档（顶级）</span><strong id="completeCount">0</strong></article>
+      <article><span>已归档（顶级）</span><strong id="archivedCount">0</strong></article>
     </section>
 
     <nav class="main-tabs">
@@ -53,6 +53,7 @@
       <button class="main-tab" data-view="data">项目主数据</button>
       <button class="main-tab" data-view="archive">归档中心</button>
       <button class="main-tab" data-view="agent">Agent 接入</button>
+      <button class="main-tab" data-view="backups">备份管理</button>
     </nav>
 
     <!-- 甘特图视图 -->
@@ -210,6 +211,46 @@
           <li>调用 <code>get_capabilities</code> 校验 <code>skillVersion</code> 与服务端 manifest 一致，确认 Skill 版本未漂移。</li>
           <li>失败时先看返回：401=未授权需检查 Bearer；404/422=参数错误，按 schema 修正后重试。</li>
         </ol>
+      </div>
+    </section>
+
+    <!-- 备份管理视图（WP-008） -->
+    <section id="backupsView" class="view">
+      <div class="data-toolbar">
+        <div>
+          <h2>备份管理</h2>
+          <p>查看历史备份、手动触发备份或执行恢复演练。备份仅恢复到隔离 D1，绝不覆盖生产数据。</p>
+        </div>
+        <div class="data-actions">
+          <button id="refreshBackupsBtn" class="secondary">刷新列表</button>
+          <button id="createBackupBtn" class="primary">立即备份</button>
+          <button id="drillRestoreBtn" class="secondary" disabled>执行恢复演练</button>
+        </div>
+      </div>
+
+      <div id="backupList" class="backup-list">
+        <div class="empty">点击"刷新列表"加载备份历史</div>
+      </div>
+
+      <div class="backup-policy">
+        <h4>保留策略</h4>
+        <ul>
+          <li>每天 UTC 03:00 自动触发一次逻辑备份（由 Worker scheduled() 调用）</li>
+          <li>保留最近 30 份备份；超出后自动删除最旧备份</li>
+          <li>每次备份覆盖 6 张业务表：portfolios、projects、stages、steps、project_links、audit_events</li>
+          <li>备份文件包含内容 SHA-256 校验，可验证完整性</li>
+        </ul>
+      </div>
+
+      <div class="backup-notice">
+        <h4>恢复演练说明</h4>
+        <ul>
+          <li>恢复演练仅恢复到隔离 D1（RESTORE_DRILL_DB），绝不覆盖生产 D1（pmo-governance-prod）</li>
+          <li>演练验证：JSON 结构、contentSha256、六表完整性、逐表行数与 SHA-256</li>
+          <li>恢复后从隔离库逐表回读验证，确认行数与 SHA-256 完全一致</li>
+          <li>隔离库未配置时，演练按钮禁用，显示"等待管理员配置隔离恢复库"</li>
+          <li>生产数据恢复需由管理员通过 Codex 手动操作</li>
+        </ul>
       </div>
     </section>
   </main>
