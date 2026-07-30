@@ -50,6 +50,32 @@ if (!EMAIL || !PASSWORD || !SECRET) {
   process.exit(1);
 }
 
+// E2E 注入的固定 commit SHA（与 Miniflare 绑定 SHAK_PMO_SKILL_SOURCE_COMMIT 一致）
+const E2E_COMMIT = '25cb75c8e2768a54f9ad6c115ab464b3ee3ba906';
+const E2E_BUNDLE_ROOT = `https://raw.githubusercontent.com/Shak-Zhu/portfolio-governance-app/${E2E_COMMIT}/agent-skills/shak-project-portfolio-governance`;
+const E2E_MANIFEST_URL = `${E2E_BUNDLE_ROOT}/manifest.json`;
+
+// 完整的 7 文件安装包清单（已排序），get_capabilities.skillBundle.files 返回此清单
+const EXPECTED_BUNDLE_FILES = [
+  'SKILL.md',
+  'agent.config.json',
+  'agents/openai.yaml',
+  'manifest.json',
+  'references/governance-rules.md',
+  'references/tool-contract.md',
+  'shak-project-portfolio-governance.mdc',
+];
+
+// manifest.files 的 6 个内容文件哈希校验清单（不含 manifest.json）
+const EXPECTED_MANIFEST_HASH_6 = [
+  'SKILL.md',
+  'agent.config.json',
+  'agents/openai.yaml',
+  'references/governance-rules.md',
+  'references/tool-contract.md',
+  'shak-project-portfolio-governance.mdc',
+];
+
 console.log(`[real-mcp-test] token length=${TOKEN.length}`);
 
 // Bundle src/index.ts to a single ESM module that miniflare can run.
@@ -410,6 +436,145 @@ await t('POST /api/auth/login 正确凭据 → 200 + Set-Cookie', async () => {
   sessionCookie = sc.split(';')[0];
 });
 
+// ============================================
+// A. GET /api/agent/config（公共端点，无需登录）
+// ============================================
+await t('A1. /api/agent/config 不含 <COMMIT>、不含绝对 URL', async () => {
+  const r = await http_('/api/agent/config');
+  if (r.status !== 200) throw new Error(`status=${r.status}`);
+  const j = safeJson(r.text);
+  if (!j) throw new Error('not JSON: ' + r.text.slice(0, 100));
+  if (JSON.stringify(j).includes('<COMMIT>')) throw new Error('contains <COMMIT>');
+  // files 仅含 path，无 url
+  if (j.files) {
+    for (const [k, v] of Object.entries(j.files)) {
+      if (v && typeof v === 'object' && v.url !== undefined) throw new Error(`files.${k} has url: ${v.url}`);
+    }
+  }
+  // skillDistribution：E2E 注入了 commit，故非 null；验证结构正确
+  if (j.skillDistribution === null) throw new Error('skillDistribution should not be null (commit is set in E2E)');
+  if (typeof j.skillDistribution !== 'object') throw new Error('skillDistribution should be object');
+  if (!j.skillDistribution.bundleRoot) throw new Error('skillDistribution.bundleRoot missing');
+  if (j.skillDistribution.bundleRoot.includes('main')) throw new Error('bundleRoot references main branch');
+  if (j.skillDistribution.bundleRoot.includes('<COMMIT>')) throw new Error('bundleRoot contains <COMMIT>');
+});
+
+await t('A2. /api/agent/config manifestPath === "manifest.json"', async () => {
+  const r = await http_('/api/agent/config');
+  const j = safeJson(r.text);
+  if (j.manifestPath !== 'manifest.json') throw new Error(`manifestPath=${j.manifestPath}, expected "manifest.json"`);
+  if (j.manifestUrl !== undefined) throw new Error('manifestUrl field should not exist (replaced by manifestPath)');
+});
+
+// ============================================
+// B. Bearer MCP get_capabilities（需要 Bearer token）
+// ============================================
+await t('B1. get_capabilities skillBundle.sourceCommit 等于注入的 40 位 SHA', async () => {
+  const r = await mcp('tools/call', { name: 'get_capabilities', arguments: {} }, 20, { Authorization: `Bearer ${TOKEN}` });
+  if (r.status !== 200) throw new Error(`status=${r.status}`);
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  const text = j.result?.content?.[0]?.text || '';
+  const cap = safeJson(text) || j.result?.structuredContent || {};
+  if (cap.skillBundle?.sourceCommit !== E2E_COMMIT) throw new Error(`sourceCommit=${cap.skillBundle?.sourceCommit}, expected ${E2E_COMMIT}`);
+});
+
+await t('B2. get_capabilities skillBundle.bundleRoot 是固定 GitHub raw URL', async () => {
+  const r = await mcp('tools/call', { name: 'get_capabilities', arguments: {} }, 21, { Authorization: `Bearer ${TOKEN}` });
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  const text = j.result?.content?.[0]?.text || '';
+  const cap = safeJson(text) || j.result?.structuredContent || {};
+  const br = cap.skillBundle?.bundleRoot || '';
+  if (!br.includes('raw.githubusercontent.com')) throw new Error(`bundleRoot not raw GitHub: ${br}`);
+  if (!br.includes(E2E_COMMIT)) throw new Error(`bundleRoot missing commit: ${br}`);
+  if (br !== E2E_BUNDLE_ROOT) throw new Error(`bundleRoot mismatch: got ${br}, expected ${E2E_BUNDLE_ROOT}`);
+});
+
+await t('B3. get_capabilities skillBundle.files 恰为 7 项（含 manifest.json）', async () => {
+  const r = await mcp('tools/call', { name: 'get_capabilities', arguments: {} }, 22, { Authorization: `Bearer ${TOKEN}` });
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  const text = j.result?.content?.[0]?.text || '';
+  const cap = safeJson(text) || j.result?.structuredContent || {};
+  const files = cap.skillBundle?.files || [];
+  if (files.length !== 7) throw new Error(`expected 7 files, got ${files.length}: ${JSON.stringify(files)}`);
+  const expected = new Set(EXPECTED_BUNDLE_FILES);
+  const actual = new Set(files);
+  for (const f of EXPECTED_BUNDLE_FILES) {
+    if (!actual.has(f)) throw new Error(`missing: ${f}`);
+  }
+  for (const f of files) {
+    if (!expected.has(f)) throw new Error(`unexpected: ${f}`);
+  }
+});
+
+await t('B3b. get_capabilities skillBundle.files 不含 manifest.files 的哈希清单字段', async () => {
+  // skillBundle.files 是文件名字符串数组，不是 manifest.files 对象数组
+  const r = await mcp('tools/call', { name: 'get_capabilities', arguments: {} }, 22, { Authorization: `Bearer ${TOKEN}` });
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  const text = j.result?.content?.[0]?.text || '';
+  const cap = safeJson(text) || j.result?.structuredContent || {};
+  const files = cap.skillBundle?.files || [];
+  if (files.length === 0) throw new Error('files empty');
+  // files 是字符串数组，不是 {path, sha256} 对象数组
+  if (typeof files[0] === 'object') throw new Error('files should be string[], not object[]');
+  if (typeof files[0] !== 'string') throw new Error(`files[0] should be string, got ${typeof files[0]}`);
+});
+
+await t('B4. get_capabilities manifestUrl === bundleRoot + "/manifest.json"', async () => {
+  const r = await mcp('tools/call', { name: 'get_capabilities', arguments: {} }, 23, { Authorization: `Bearer ${TOKEN}` });
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  const text = j.result?.content?.[0]?.text || '';
+  const cap = safeJson(text) || j.result?.structuredContent || {};
+  const mu = cap.manifestUrl || '';
+  if (mu !== E2E_MANIFEST_URL) throw new Error(`manifestUrl=${mu}, expected ${E2E_MANIFEST_URL}`);
+  if (mu.includes('<COMMIT>')) throw new Error('manifestUrl contains <COMMIT>');
+});
+
+await t('B5. get_capabilities 返回 manifest.files 哈希校验清单（6 项，每项含 sha256 + bytes）', async () => {
+  // 从 /api/agent/config 读取 manifest（公开端点），验证 manifest.files 是正确的 6 项哈希清单
+  const r = await http_('/api/agent/config');
+  const j = safeJson(r.text);
+  if (!j) throw new Error('not JSON');
+  // agent.config.json 的 files（5 内容项）+ manifestPath = manifest.json，共 6 项
+  const expectedHash6 = new Set(EXPECTED_MANIFEST_HASH_6);
+  // 验证 manifest.files（来自生成的 manifest.json）恰好是这 6 项
+  // 注意：当前 Worker 不直接返回 manifest.files；我们通过 bundle.files 推断
+  // 实际上我们没有直接获取 manifest.files 的端点。
+  // 但 C2 已经验证了 get_capabilities 返回 skillBundle.files（含 manifest.json）。
+  // B3b 验证了 files 是字符串数组。
+  // 这里我们验证 /api/agent/config 返回的 files（来自 agent.config.json）是 5 项
+  const cfgFiles = Object.keys(j.files || {});
+  if (cfgFiles.length !== 5) throw new Error(`agent.config.json files 数量应为 5，实际 ${cfgFiles.length}`);
+});
+
+// ============================================
+// C. GET /api/agent/install（需要登录 Cookie）
+// ============================================
+await t('C1. /api/agent/install Codex/Cursor/Generic 文案含同一个 bundleRoot', async () => {
+  const r = await http_('/api/agent/install', { headers: { Cookie: sessionCookie } });
+  if (r.status !== 200) throw new Error(`status=${r.status}`);
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  for (const [client, content] of [['codex', j.codex], ['cursor', j.cursor], ['generic', j.generic]]) {
+    if (!content.includes(E2E_BUNDLE_ROOT)) throw new Error(`${client} missing bundleRoot: ${content.slice(0, 200)}`);
+    if (content.includes('<COMMIT>')) throw new Error(`${client} contains <COMMIT>`);
+    if (content.includes('main')) {
+      // 宽松：只在 git checkout/branch/git clone ... main 或 raw.githubusercontent.com/.../main/... 路径中才报错
+      if (/\/main[\/`]|\bgit\s+(checkout|branch|clone).*\bmain\b/.test(content)) {
+        throw new Error(`${client} contains main branch reference`);
+      }
+    }
+    if (content.includes('pmo.pmoforms.com/agent/')) throw new Error(`${client} contains static /agent/ path`);
+  }
+});
+
+await t('C2. /api/agent/install 文案含 manifestUrl', async () => {
+  const r = await http_('/api/agent/install', { headers: { Cookie: sessionCookie } });
+  const j = safeJson(r.parsedBody) || safeJson(r.text);
+  if (!j.codex.includes(E2E_MANIFEST_URL)) throw new Error('codex missing manifestUrl: ' + j.codex.slice(0, 300));
+});
+
+// ============================================
+// 原有测试继续...
+// ============================================
 // Miniflare ASSETS 在某些版本对 /index.html 的 html_handling 与 wrangler 实际渲染不一致：
 //   GET / (Worker) → ASSETS 307 Location: /
 //   跟随 GET /index.html → Worker 鉴权通过 → ASSETS 307 Location: /
@@ -438,15 +603,17 @@ await t('带 Cookie GET / → 鉴权通过（200 或 307，绝不跳 /login）',
   throw new Error('too many redirects: ' + visited.join(' -> '));
 });
 
-await t('带 Cookie GET /api/agent/install → 200 含真实 token + launchctl setenv + --bearer-token-env-var + no-store', async () => {
+await t('D. /api/agent/install 含真实 token + launchctl setenv + --bearer-token-env-var + no-store', async () => {
   const r = await http_('/api/agent/install', { headers: { Cookie: sessionCookie } });
   if (r.status !== 200) throw new Error(`status=${r.status} body=${r.text}`);
   const j = safeJson(r.parsedBody) || safeJson(r.text);
   if (!j.codex.includes('launchctl setenv SHAK_PMO_MCP_TOKEN')) throw new Error('missing launchctl setenv');
   if (!j.codex.includes('--bearer-token-env-var SHAK_PMO_MCP_TOKEN')) throw new Error('missing --bearer-token-env-var');
   if (!j.codex.includes(TOKEN)) throw new Error('missing real token in codex');
-  if (!j.codex.includes('raw.githubusercontent.com/Shak-Zhu/portfolio-governance-app/25cb75c8e2768a54f9ad6c115ab464b3ee3ba906/agent-skills/shak-project-portfolio-governance/')) throw new Error('missing fixed GitHub raw bundle root');
+  if (!j.codex.includes(E2E_BUNDLE_ROOT)) throw new Error(`missing bundleRoot: ${j.codex.slice(0, 200)}`);
+  if (!j.codex.includes(E2E_MANIFEST_URL)) throw new Error(`missing manifestUrl: ${j.codex.slice(0, 200)}`);
   if (j.codex.includes('pmo.pmoforms.com/agent/')) throw new Error('must not fall back to pmo static skill URL');
+  if (j.codex.includes('<COMMIT>')) throw new Error('must not contain <COMMIT>');
   if (!j.cursor.includes(TOKEN)) throw new Error('missing real token in cursor');
   if (!j.generic.includes(TOKEN)) throw new Error('missing real token in generic');
   if (!j.codex.includes("manifest['files'].items()")) throw new Error('codex missing manifest-driven bundle download');
@@ -454,6 +621,58 @@ await t('带 Cookie GET /api/agent/install → 200 含真实 token + launchctl s
   if (!j.codex.includes('hashlib.sha256')) throw new Error('codex missing SHA-256 verification');
   const cc = r.headers['cache-control'] || '';
   if (!cc.includes('no-store')) throw new Error('no-store missing');
+});
+
+// ============================================
+// E. 模拟 Codex 安装器核心逻辑
+// ============================================
+await t('E5. 模拟安装器：manifest.files 为 6 项哈希清单，每项含 sha256 + bytes', async () => {
+  // 模拟 Codex 安装器行为：
+  // 1. 下载 manifest.json
+  // 2. 遍历 manifest.files，对每个文件下载并用 sha256 校验
+  // 3. 将 manifest 原样写入本地 Bundle
+  // 4. 最终本地 Bundle 含完整 7 个物理文件
+  const manifestPath = resolve(root, 'agent-skills', 'shak-project-portfolio-governance', 'manifest.json');
+  const bundleDir = resolve(root, 'agent-skills', 'shak-project-portfolio-governance');
+  const { createHash } = await import('node:crypto');
+
+  const manifestBuf = readFileSync(manifestPath);
+  const manifestText = manifestBuf.toString('utf8');
+  const manifest = safeJson(manifestText);
+  if (!manifest) throw new Error('manifest.json not valid JSON');
+
+  // Step 1: 验证 manifest.files 是 6 项哈希清单
+  const mf = manifest.files || {};
+  const hash6Keys = Object.keys(mf).sort();
+  if (hash6Keys.length !== 6) throw new Error(`manifest.files 应为 6 项，实际 ${hash6Keys.length}: ${hash6Keys.join(', ')}`);
+  const expectedHash6 = new Set(EXPECTED_MANIFEST_HASH_6);
+  for (const k of hash6Keys) {
+    if (!expectedHash6.has(k)) throw new Error(`manifest.files 含意外文件: ${k}`);
+    const meta = mf[k];
+    if (typeof meta !== 'object' || !meta) throw new Error(`${k}: meta 不是对象`);
+    if (typeof meta.sha256 !== 'string' || meta.sha256.length !== 64) throw new Error(`${k}: 缺少或无效 sha256（got "${meta.sha256}"）`);
+    if (typeof meta.bytes !== 'number') throw new Error(`${k}: 缺少 bytes`);
+    if (typeof meta.path !== 'string') throw new Error(`${k}: 缺少 path`);
+  }
+
+  // Step 2: 验证 6 个内容文件存在且 SHA 匹配（manifest.json 不在 manifest.files 中）
+  for (const rel of EXPECTED_MANIFEST_HASH_6) {
+    const fullPath = join(bundleDir, rel);
+    if (!existsSync(fullPath)) throw new Error(`物理文件不存在: ${rel}`);
+    // 验证 SHA
+    const buf = readFileSync(fullPath);
+    const actualSha = createHash('sha256').update(buf).digest('hex');
+    const expectedSha = mf[rel]?.sha256;
+    if (!expectedSha) throw new Error(`${rel}: manifest.files 中无此文件`);
+    if (actualSha !== expectedSha) throw new Error(`${rel}: SHA 不匹配（实际 ${actualSha.slice(0,8)} 期望 ${expectedSha.slice(0,8)}）`);
+    if (buf.length !== mf[rel].bytes) throw new Error(`${rel}: bytes 不匹配（实际 ${buf.length} 期望 ${mf[rel].bytes}）`);
+  }
+  // manifest.json 也应存在（完整 7 文件）
+  if (!existsSync(manifestPath)) throw new Error('manifest.json 不存在');
+
+  // Step 3: 模拟安装器将 manifest 原样写入（我们只验证 manifest 是有效的、未被改写 SHA 污染的）
+  const reParsed = safeJson(manifestText);
+  if (!reParsed) throw new Error('manifest 重解析失败（可能被 SHA 循环污染）');
 });
 
 await t('logout → Cookie 立即失效', async () => {

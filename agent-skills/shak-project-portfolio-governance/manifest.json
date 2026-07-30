@@ -8,44 +8,45 @@
   "productionBaseUrl": "https://pmo.pmoforms.com",
   "toolProtocolVersion": "2025-06-18",
   "serverVersion": "1.0.0",
+  "manifestPath": "manifest.json",
   "skillSourceCommit": null,
-  "generatedAt": "2026-07-30T01:35:49.138Z",
+  "generatedAt": "2026-07-30T06:00:46.361Z",
   "files": {
     "SKILL.md": {
-      "sha256": "e85a113bc4fcf2c1476dcd43031f16a762959875dc3ffb207a5acb606888ccf0",
-      "bytes": 8132,
-      "contentType": "text/markdown; charset=utf-8"
-    },
-    "agent.config.json": {
-      "sha256": "5263b49a43f5f0ac093f4d0708ff8b936ce98445cc2be6949edbad0182535a38",
-      "bytes": 717,
-      "contentType": "application/json; charset=utf-8"
-    },
-    "agents/openai.yaml": {
-      "sha256": "b48a940816ed60878821bc004289dbcc4d5c4b13ffdda25e6713096c9c3a5257",
-      "bytes": 1896,
-      "contentType": "application/yaml; charset=utf-8"
-    },
-    "references/governance-rules.md": {
-      "sha256": "8475c350c5ab618a95432ea7a61d2b32a0c97c795d000cb475d03ee6a8030c95",
-      "bytes": 7911,
-      "contentType": "text/markdown; charset=utf-8"
-    },
-    "references/tool-contract.md": {
-      "sha256": "e3126e7b1731d2d70ff8036ea8da041a2c3c792ffed4b081eea9765ee5bcd4d7",
-      "bytes": 7166,
-      "contentType": "text/markdown; charset=utf-8"
+      "path": "SKILL.md",
+      "sha256": "a8040e4a863e86829a3b0753e7030e8a8ba91e93b9fe4b0c0d53fe9c2f601573",
+      "bytes": 8631
     },
     "shak-project-portfolio-governance.mdc": {
+      "path": "shak-project-portfolio-governance.mdc",
       "sha256": "07dfde8b9718ad59996e825b5c1421fbe7a0aacc4b5bb2e09548f932ab0a9ec4",
-      "bytes": 3582,
-      "contentType": "text/markdown; charset=utf-8"
+      "bytes": 3582
+    },
+    "references/tool-contract.md": {
+      "path": "references/tool-contract.md",
+      "sha256": "e3126e7b1731d2d70ff8036ea8da041a2c3c792ffed4b081eea9765ee5bcd4d7",
+      "bytes": 7166
+    },
+    "references/governance-rules.md": {
+      "path": "references/governance-rules.md",
+      "sha256": "8475c350c5ab618a95432ea7a61d2b32a0c97c795d000cb475d03ee6a8030c95",
+      "bytes": 7911
+    },
+    "agents/openai.yaml": {
+      "path": "agents/openai.yaml",
+      "sha256": "b48a940816ed60878821bc004289dbcc4d5c4b13ffdda25e6713096c9c3a5257",
+      "bytes": 1896
+    },
+    "agent.config.json": {
+      "path": "agent.config.json",
+      "sha256": "595e004336727eea84210a2807b0bc3bad44bf3055dcf439daf44281ab1fae9b",
+      "bytes": 898
     }
   },
   "installNotes": {
-    "codex": "参见网页 /api/agent/install (Codex tab)；下载到 ~/.codex/skills/shak-project-portfolio-governance/",
+    "codex": "参见网页 /api/agent/install（Codex tab，需登录）；安装文案含固定 GitHub commit 下的 SHA-256 校验。",
     "cursor": "合并 ~/.cursor/mcp.json 并安装 .cursor/rules/shak-project-portfolio-governance.mdc",
     "general": "通过任意兼容 MCP Streamable HTTP 客户端调用 https://pmo.pmoforms.com/mcp"
   },
-  "privacy": "本 manifest 不包含真实 Bearer Token、登录凭据、Session 信息或 GitHub PAT。"
+  "privacy": "本 manifest 不包含真实 Bearer Token、GitHub PAT 或 Session 信息。真实 GitHub raw URL 仅由 /api/agent/install 与 get_capabilities 在 Codex 发布后注入。"
 }

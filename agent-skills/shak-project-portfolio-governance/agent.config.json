@@ -6,15 +6,13 @@
   "skillVersion": "1.0.0",
   "serverVersion": "1.0.0",
   "toolProtocolVersion": "2025-06-18",
-  "manifestUrl": "https://pmo.pmoforms.com/agent/manifest.json",
+  "manifestPath": "manifest.json",
   "files": {
-    "skill": {
-      "path": "SKILL.md",
-      "url": "https://pmo.pmoforms.com/agent/skills/shak-project-portfolio-governance/SKILL.md"
-    },
-    "rule": {
-      "path": "shak-project-portfolio-governance.mdc",
-      "url": "https://pmo.pmoforms.com/agent/skills/shak-project-portfolio-governance/shak-project-portfolio-governance.mdc"
-    }
-  }
+    "skill":        { "path": "SKILL.md" },
+    "rule":         { "path": "shak-project-portfolio-governance.mdc" },
+    "toolContract":  { "path": "references/tool-contract.md" },
+    "governanceRules": { "path": "references/governance-rules.md" },
+    "openaiYaml":   { "path": "agents/openai.yaml" }
+  },
+  "note": "本文件仅含相对路径。真实固定 GitHub raw Bundle URL 仅由 /api/agent/install 与 get_capabilities 在 Codex 发布后注入（SHAK_PMO_SKILL_SOURCE_COMMIT）。不得在 Git 中填入真实 commit SHA 或绝对下载 URL。"
 }

@@ -641,8 +641,9 @@ export function createMcpServerFactory(ctx: ServerContext) {
           serverVersion: SERVER_VERSION,
           toolProtocolVersion: AGENT_CONFIG.toolProtocolVersion,
         skillVersion: AGENT_CONFIG.skillVersion,
+        // manifestUrl：仅在 Codex 发布后（SHAK_PMO_SKILL_SOURCE_COMMIT 已注入）有值
         manifestUrl: ctx.skillDistribution?.manifestUrl ?? null,
-          mcpUrl: AGENT_CONFIG.mcpUrl,
+        mcpUrl: AGENT_CONFIG.mcpUrl,
           auth: {
             mode: 'bearer',
             header: 'Authorization: Bearer <token>',
@@ -653,14 +654,13 @@ export function createMcpServerFactory(ctx: ServerContext) {
           skillBundle: {
             sourceCommit: ctx.skillDistribution?.sourceCommit ?? null,
             bundleRoot: ctx.skillDistribution?.bundleRoot ?? null,
-            files: [
-              'SKILL.md',
-              'shak-project-portfolio-governance.mdc',
-              'references/tool-contract.md',
-              'references/governance-rules.md',
-              'agents/openai.yaml',
-              'manifest.json',
-            ],
+            // files：包含 manifest.json + agent.config.json + 5 个内容文件，共 7 项
+            // 注意：此字段是"完整物理文件清单"，不是 manifest.files 哈希校验清单
+            files: [...new Set([
+              AGENT_CONFIG.manifestPath,
+              'agent.config.json',
+              ...Object.values(AGENT_CONFIG.files).map(f => f.path),
+            ])].sort(),
             // skillSourceCommit 由 Codex 在 QC 后把不可变 Git commit 写入 manifest 与本页；
             // Cursor 不猜测、不提交、不发布。
             installMode: 'one-click copy from /api/agent/install after web login',

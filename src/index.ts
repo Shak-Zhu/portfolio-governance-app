@@ -56,7 +56,6 @@ const PUBLIC_WEB_PATHS = new Set([
 ]);
 // 静态资源（login 页本身依赖）公开；其它 HTML 必须经过登录保护。
 const PUBLIC_STATIC_EXTENSIONS = ['.js', '.css', '.png', '.svg', '.ico', '.map'];
-const PUBLIC_STATIC_PREFIXES = ['/agent/'];
 const SKILL_GITHUB_REPO = 'Shak-Zhu/portfolio-governance-app';
 
 interface SkillDistribution {
@@ -177,20 +176,25 @@ app.get('/api/agent/config', (c) => {
   const origin = new URL(c.req.url).origin;
   const bearerConfigured = !!c.env.SHAK_PMO_MCP_TOKEN;
   const distribution = getSkillDistribution(c.env);
+  // files 仅含相对路径，无绝对 URL（防止 Git 中漂移）
+  // 真实 GitHub raw URL 仅在 skillDistribution（Codex 发布后）存在
   return Response.json({
     mcpName: AGENT_CONFIG.mcpName,
     systemName: AGENT_CONFIG.systemName,
     mcpUrl: AGENT_CONFIG.mcpUrl,
-    manifestUrl: distribution?.manifestUrl ?? null,
+    // manifestPath 是相对于 Bundle 根目录的路径，非绝对 URL
+    manifestPath: AGENT_CONFIG.manifestPath,
     skillVersion: AGENT_CONFIG.skillVersion,
     serverVersion: AGENT_CONFIG.serverVersion,
     toolProtocolVersion: AGENT_CONFIG.toolProtocolVersion,
+    // files 仅含相对路径，无 URL
     files: AGENT_CONFIG.files,
     auth: {
       mode: 'bearer',
       header: 'Authorization: Bearer <token>',
       configured: bearerConfigured,
     },
+    // 真实固定 GitHub raw URL：仅在 Codex 发布后由 SHAK_PMO_SKILL_SOURCE_COMMIT 注入；发布前为 null
     skillDistribution: distribution,
     localMcpUrl: `${origin}/mcp`,
   });
@@ -278,7 +282,7 @@ app.use('/api/*', async (c, next) => {
 });
 
 // 网页 HTML 保护：未登录的浏览器 GET HTML 跳 /login。
-// 静态资源（.js/.css/.png 等）、login 页面本身、/agent/* 公开。
+// 静态资源（.js/.css/.png 等）、login 页面本身公开。
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
   const path = url.pathname;
@@ -288,12 +292,7 @@ app.use('*', async (c, next) => {
     await next();
     return;
   }
-  // 静态资源前缀
-  if (PUBLIC_STATIC_PREFIXES.some((p) => path.startsWith(p))) {
-    await next();
-    return;
-  }
-  // 静态资源扩展
+  // 静态资源扩展名公开
   if (PUBLIC_STATIC_EXTENSIONS.some((ext) => path.endsWith(ext))) {
     await next();
     return;
@@ -740,6 +739,13 @@ async function injectStatic(c, key, fallbackPath) {
 
 app.all('*', async (c) => {
   const url = new URL(c.req.url);
+  // /agent/* 永久不存在：返回 404（静态分发已移除，Skill 仅通过 GitHub raw 安装）
+  if (url.pathname.startsWith('/agent/')) {
+    return Response.json({ error: 'Agent Skill 静态分发已移除，请通过 /api/agent/install 获取安装指令' }, {
+      status: 404,
+      headers: noStoreHeaders(),
+    });
+  }
   if (url.pathname === '/login' || url.pathname === '/login.html') {
     return injectStatic(c, 'SHAK_PMO_INJECT_LOGIN_HTML', '/login.html');
   }
@@ -756,10 +762,6 @@ export default {
     // /mcp 始终走 MCP 处理器，与网页登录完全分离，绝不被 Hono 拦截
     if (url.pathname === '/mcp') {
       return handleMcp(request, env, ctx);
-    }
-    // /agent/* 静态资产由 ASSETS 提供，无须鉴权
-    if (url.pathname.startsWith('/agent/')) {
-      return env.ASSETS.fetch(request);
     }
     // 其它：Hono 默认处理
     return app.fetch(request, env, ctx);

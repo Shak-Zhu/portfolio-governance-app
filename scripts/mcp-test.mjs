@@ -23,7 +23,37 @@
  *  - 每个写领域：成功 + 业务规则拒绝
  *  - 审计 actor 来自认证上下文（写入固定为 mcp:shak-pmo-owner）
  *  - 全 31 工具真实调用
+ *  - SSE 与 JSON 响应均可正确解析
  */
+
+// ============ SSE 解析自测（独立验证，无需 Worker）============
+function parseMcpResponse(text, contentType) {
+  if (!contentType.includes('text/event-stream') && !/^event:|^data:/m.test(text)) {
+    try { return JSON.parse(text); } catch { return null; }
+  }
+  const dataLines = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (rawLine.startsWith('data:')) {
+      dataLines.push(rawLine.replace(/^data:\s?/, ''));
+    }
+  }
+  if (!dataLines.length) return null;
+  try { return JSON.parse(dataLines.join('\n')); } catch { return null; }
+}
+
+const sseText = `event: message
+data: {"result":{"content":[{"type":"text","text":"hello"}],"structuredContent":{"msg":"ok"}},"jsonrpc":"2.0","id":1}
+`;
+const jsonText = '{"jsonrpc":"2.0","result":{"tools":[]},"id":1}';
+const sseResult = parseMcpResponse(sseText, 'text/event-stream');
+const jsonResult = parseMcpResponse(jsonText, 'application/json');
+const sseOk = sseResult?.result?.structuredContent?.msg === 'ok';
+const jsonOk = jsonResult?.result?.tools !== undefined;
+if (!sseOk || !jsonOk) {
+  console.error('❌ parseMcpResponse 自测失败：sseOk=' + sseOk + ' jsonOk=' + jsonOk);
+  process.exit(1);
+}
+console.log('✅ parseMcpResponse 自测通过（SSE + JSON 解析正常）');
 
 const ORIGIN = process.env.MCP_ORIGIN || 'http://127.0.0.1:8788';
 const MCP_URL = `${ORIGIN}/mcp`;
@@ -71,9 +101,8 @@ function cookieHeader() {
   return Array.from(cookieJar.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
 }
 
-// ============ MCP RPC 客户端（带 Bearer）============
+// ============ MCP RPC 客户端（带 Bearer，兼容 JSON 与 SSE）============
 let rpcId = 0;
-function nextId() { return ++rpcId; }
 
 async function mcpRpc(method, params, opts = {}) {
   const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' };
@@ -85,11 +114,9 @@ async function mcpRpc(method, params, opts = {}) {
     headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: nextId(), method, params: params || {} }),
   });
-  // 取响应文本
   const text = await r.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = null; }
-  return { status: r.status, ok: r.ok, headers: r.headers, body: data, raw: text };
+  const body = parseMcpResponse(text, r.headers.get('content-type') || '');
+  return { status: r.status, ok: r.ok, headers: r.headers, body, raw: text };
 }
 
 // ============ Web API（含 Cookie）============
@@ -152,16 +179,18 @@ async function runDiscoveryTests() {
   await test('D1. initialize 返回 serverInfo + capabilities', async () => {
     const r = await mcpRpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'mcp-test', version: '1.0.0' } });
     assert(r.status === 200, `状态 200`);
-    assert(r.body.result.serverInfo?.name === 'shak-project-portfolio-governance', `name 错误`);
-    assert(r.body.result.serverInfo?.version, `version 必须有`);
-    assert(r.body.result.capabilities?.tools, `tools capability 必须有`);
+    assert(r.body, 'JSON-RPC body 不能为 null（SSE 解析失败或服务 500）');
+    assert(r.body?.result?.serverInfo?.name === 'shak-project-portfolio-governance', `name 错误`);
+    assert(r.body?.result?.serverInfo?.version, `version 必须有`);
+    assert(r.body?.result?.capabilities?.tools, `tools capability 必须有`);
   });
 
   let tools;
   await test('D2. tools/list 返回完整 31 工具', async () => {
     const r = await mcpRpc('tools/list', {});
     assert(r.status === 200, `状态 200`);
-    tools = r.body.result.tools;
+    assert(r.body, 'JSON-RPC body 不能为 null');
+    tools = r.body?.result?.tools;
     assert(Array.isArray(tools), `tools 应为数组`);
     assert(tools.length === 31, `工具数应为 31，实际 ${tools.length}`);
     for (const t of tools) {
@@ -175,7 +204,9 @@ async function runDiscoveryTests() {
   await test('D3. get_capabilities 返回鉴权模式为 bearer', async () => {
     const r = await mcpRpc('tools/call', { name: 'get_capabilities', arguments: {} });
     assert(r.status === 200, `状态 200`);
-    const out = JSON.parse(r.body.result.structuredContent || JSON.stringify(r.body.result.content?.[0]?.text ? JSON.parse(r.body.result.content[0].text).result : {}));
+    assert(r.body, 'JSON-RPC body 不能为 null');
+    // structuredContent 是工具返回的 JSON；直接取用，不做二次 JSON.parse。
+    const out = r.body?.result?.structuredContent || {};
     assert(out.auth?.mode === 'bearer', `auth.mode 应为 bearer，实际 ${out.auth?.mode}`);
     assert(out.auth?.header?.startsWith('Authorization: Bearer'), `auth.header 必须是 Bearer Header`);
     assert(out.toolCount === 31, `toolCount 应为 31，实际 ${out.toolCount}`);
@@ -244,7 +275,11 @@ async function runToolMatrixTests() {
     const r = await mcpRpc('tools/call', { name, arguments: args });
     if (r.body?.result?.isError) throw new Error(`工具 ${name} 报错：${r.body.result.content?.[0]?.text}`);
     if (r.body?.error) throw new Error(`工具 ${name} 错误：${JSON.stringify(r.body.error)}`);
-    const out = r.body.result.structuredContent || (r.body.result.content?.[0]?.text ? JSON.parse(r.body.result.content[0].text) : {});
+    const out = r.body?.result?.structuredContent || {};
+    if (!out || (typeof out === 'object' && Object.keys(out).length === 0)) {
+      const text = r.body?.result?.content?.[0]?.text || '';
+      try { Object.assign(out, JSON.parse(text)); } catch {}
+    }
     return out;
   }
 

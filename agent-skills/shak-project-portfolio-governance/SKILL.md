@@ -26,7 +26,11 @@ mcpUrl: https://pmo.pmoforms.com/mcp
 
 - 标准 Streamable HTTP 端点：`POST https://pmo.pmoforms.com/mcp`
 - 鉴权：`Authorization: Bearer <token>`，缺失/错误 → `401` JSON-RPC 错误。
-- Token 由系统管理员在网页登录后从「Agent 接入中心」一键复制：Codex 命令带 `--bearer-token`；Cursor 写入 `~/.cursor/mcp.json` 的 `headers.Authorization`；通用客户端走 `Authorization: Bearer <token>`。
+- Token 由系统管理员在网页登录后从「Agent 接入中心」一键复制：
+  - **Codex**：先用 `launchctl setenv SHAK_PMO_MCP_TOKEN '<token>'` 写入环境变量，再用 `codex mcp add shak-project-portfolio-governance --url https://pmo.pmoforms.com/mcp --bearer-token-env-var SHAK_PMO_MCP_TOKEN` 注册。**必须完全退出 Codex Desktop 并重开**，新的 MCP 会话才会读到该环境变量。
+  - **Cursor**：安全合并 `~/.cursor/mcp.json`，写入 `headers.Authorization: Bearer <token>`。
+  - **通用 MCP Client**：直接发送 `Authorization: Bearer <token>` Header。
+- **不存在 `--bearer-token <token>` / `--header` 等独立 CLI flag**；Codex 仅接受 `--bearer-token-env-var <ENV_VAR_NAME>`。
 - **不存在 OAuth、scope、动态注册、KV token/grant、Access OAuth、`.well-known/oauth-*` 任何机制**；也不存在「dev OAuth」「pending_admin_enablement」等状态。
 - Token 永不出现在静态资产、Git、Skill、manifest、日志、报告；网页 /api/agent/install 仅在用户登录会话内返回含真实 Token 的复制文案，并设置 `Cache-Control: no-store`。
 

@@ -16,7 +16,7 @@
     "db:smoke": "node scripts/smoke-test.js",
     "db:create": "wrangler d1 create pmo-governance-local",
     "agent:manifest": "node scripts/generate-agent-manifest.mjs",
-    "skill:build": "node scripts/build-skill-manifest.mjs",
+    "skill:build": "node scripts/generate-agent-manifest.mjs",
     "mcp:test": "node scripts/mcp-test.mjs"
   },
   "dependencies": {

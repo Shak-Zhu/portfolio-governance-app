@@ -102,7 +102,6 @@ Worker 会把非 `/api/*` 与非 `/mcp` 请求转交给 `[assets]` 绑定（`pub
 - `/login`、`/index.html`、`/` → 网页（text/html）
 - `/app.js`、`/styles.css`、`/login.js` → 前端静态资源
 - `/api/health` → API 健康检查（application/json）
-- `/agent/manifest.json`、`/agent/skills/shak-project-portfolio-governance/*` → Agent Skill 静态资产
 
 ## 开发命令
 
@@ -115,8 +114,7 @@ Worker 会把非 `/api/*` 与非 `/mcp` 请求转交给 `[assets]` 绑定（`pub
 | `npm run db:migrate` | 运行数据库迁移 |
 | `npm run db:init` | 初始化样例数据 |
 | `npm run db:smoke` | 运行 API 冒烟测试（需先启动 dev；带 Cookie 登录） |
-| `npm run agent:manifest` | 生成版本化 Agent Skill manifest 并同步 `public/agent/` 静态资产（含 SHA-256） |
-| `npm run skill:build` | 生成本地 `agent-skills/.../manifest.json`（覆盖 bundle 全文件 + SHA-256；不发布 GitHub，由 Codex 落 commit SHA） |
+| `npm run skill:build` | 生成本地 `agent-skills/.../manifest.json`（覆盖 bundle 全文件 + SHA-256；Git commit SHA 由 Codex 发布后注入） |
 | `npm run test:e2e` | 真 Worker runtime 集成测试（Miniflare + bundle 内 `public/*` 与 MCP Server SDK） |
 | `npm run mcp:test` | 运行 MCP Bearer 集成测试（需先启动 dev） |
 
@@ -387,17 +385,18 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 登录后访问顶部「Agent 接入」标签，提供 Codex、Cursor、通用 MCP Client 三张卡，每张一个「一键复制安装指令」按钮：
 
 - 复制内容含真实 Bearer Token；通过 `GET /api/agent/install`（带 Cookie）动态生成，响应头 `Cache-Control: no-store`。
-- Codex 指令：`codex mcp add <name> --url <mcp-url> --bearer-token <token> --header "Authorization: Bearer <token>"` + 下载 SKILL.md。
+- Codex 指令：`launchctl setenv SHAK_PMO_MCP_TOKEN "<token>"`（或 `export SHAK_PMO_MCP_TOKEN="<token>"`），然后 `codex mcp add shak-project-portfolio-governance --url https://pmo.pmoforms.com/mcp --bearer-token-env-var SHAK_PMO_MCP_TOKEN`；必须完全退出并重开 Codex Desktop；不得使用独立 `--bearer-token` 或 `--header`。
 - Cursor 指令：Python 脚本安全合并 `~/.cursor/mcp.json`（保留其它 MCP），写入 `headers.Authorization`；下载 `.mdc` Rule。
 - 通用 MCP Client：标准 Streamable HTTP + Authorization Header + Manifest/Skill 校验步骤。
 - URL、manifest、版本号全部来自 `/api/agent/config`（公共）；Token 仅在登录会话内由 `/api/agent/install` 注入。
 
 ### 版本化 Agent Skill
 
-- Git 权威源：`agent-skills/shak-project-portfolio-governance/{SKILL.md, shak-project-portfolio-governance.mdc, manifest.json}`
-- 生产静态资产：`/agent/manifest.json`、`/agent/skills/shak-project-portfolio-governance/{SKILL.md, *.mdc}`
-- `manifest.json` 含 `skillVersion`、`mcpUrl`、文件 URL、**SHA-256**、工具协议版本、生成时间。
-- 更新 Skill 后运行 `npm run agent:manifest` 重新生成并同步静态资产与哈希。
+- **Git 权威源**：`agent-skills/shak-project-portfolio-governance/`（Bundle 根目录）
+- **生产安装**：登录后访问 `/api/agent/install`（需 Cookie），自动从固定 Git commit 下的 GitHub raw URL 下载并 SHA-256 校验全部 6 个 Bundle 文件
+- Codex 在 PM/QC 通过后，将不可变 40 位 Git commit SHA 写入 Worker 发布配置 `SHAK_PMO_SKILL_SOURCE_COMMIT`；`/api/agent/install` 从该固定 commit 下载
+- `manifest.json` 含 `skillVersion`、`mcpUrl`、**SHA-256**、工具协议版本、生成时间
+- 安装器校验每文件 SHA-256 后才写入本地 Skill 目录
 
 ### 故障排查
 
@@ -408,7 +407,7 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 | `tools/call` 返回 "不存在" | ID 猜测或对象已删 | 先 `list_*`/`get_*` 确认 ID |
 | `tools/call` 返回 "http" | 关联资料 URL 非法 | URL 必须以 `http(s)://` 开头 |
 | `tools/call` 返回 "子项目/后代/完成" | 归档/删除受层级规则限制 | 先完成或处理子项目再操作 |
-| `get_capabilities` 的 `skillVersion` 与本地 manifest 不一致 | Skill 版本漂移 | 重新运行 `npm run agent:manifest` 并重装 Skill |
+| `get_capabilities` 的 `skillVersion` 与本地 manifest 不一致 | Skill 版本漂移 | 重新运行 `npm run skill:build` 并重新从 `/api/agent/install` 获取安装指令 |
 | 网页访问跳转 `/login` | 未登录或 Session 失效 | 用邮箱+密码登录；登出按钮位于顶部右侧 |
 | `/api/agent/install` 返回 401 | 未登录 | 登录后再访问 Agent 接入中心 |
 
@@ -426,7 +425,7 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 4. ✅ `npm run db:migrate` Migration 正常（连续两次幂等）
 5. ✅ `npm run db:smoke` API 测试通过（带 Cookie）
 6. ✅ `npm run mcp:test` MCP Bearer 集成测试通过
-7. ✅ `npm run agent:manifest` 重新生成 manifest，SHA-256 与静态资产一致
+7. ✅ `npm run skill:build` 重新生成 manifest，SHA-256 校验通过
 
 ## 目录结构
 
@@ -441,10 +440,7 @@ portfolio-governance-app/
 │   ├── login.html
 │   ├── login.js
 │   ├── styles.css
-│   ├── app.js
-│   └── agent/
-│       ├── manifest.json
-│       └── skills/shak-project-portfolio-governance/
+│   └── app.js
 ├── scripts/
 │   ├── smoke-test.js
 │   ├── unit-test.mjs
