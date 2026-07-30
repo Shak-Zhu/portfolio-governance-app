@@ -106,3 +106,26 @@ Codex 在本机以 `.dev.vars` 启动全新 Worker：`npm run dev -- --port 8901
 3. 由 Codex 更新发布版安装配置/文案，使其只引用上述精确 Bundle 路径，绝不引用整个仓库、`main` 或 pmo 静态 Skill URL。
 4. 由 Codex 加入 manifest 六文件的逐项 SHA-256 下载校验与失败清理；完成后再提交/发布最终配置版本。
 5. 由 Codex 写入生产 Worker Secret、部署、回读 GitHub raw 链接，并完成真机 Codex/Cursor 安装、Skill 触发和 MCP 一读一写验收。
+
+## 2026-07-30｜Codex 发布验收结论
+
+### 结论
+
+**WP-006 与 WP-006A：PM/QC 通过，已生产发布；待 Human Owner 业务验收。**
+
+### Codex 发布证据
+
+| 项目 | 实际结果 |
+|---|---|
+| GitHub Bundle 固定来源 | `25cb75c8e2768a54f9ad6c115ab464b3ee3ba906` 下的精确 `agent-skills/shak-project-portfolio-governance/`，不使用 `main`、仓库首页或站点静态副本 |
+| 发布集成修复 | `d70caf1 fix: preserve Cursor skill manifest` 已推送；Cursor 安装器保留已校验 manifest |
+| Worker 生产版本 | `4150d607-f454-4eec-ad47-f1c39a867d4a`，域名 `https://pmo.pmoforms.com` |
+| 网页与安装接口 | 登录成功后 `/api/agent/install` HTTP 200，含 Codex/Cursor/Generic 文案；接口为 `no-store` |
+| MCP 生产验证 | 有效 Bearer + 标准 Streamable HTTP Accept：`initialize` HTTP 200；缺失 Bearer：HTTP 401；无网页登录跳转 |
+| Codex 一键安装 | 已实际执行；全局 MCP 注册为 enabled/Bearer；6 文件 Bundle 安装并按 manifest 校验 |
+| Cursor 一键安装 | 已实际执行；MCP 安全合并、Rule 已安装；manifest 与全部 6 文件 SHA-256 校验通过 |
+
+### 发布后边界
+
+- Bearer Token、登录密码、Session 与 GitHub 凭据均未写入 Git、Skill、manifest、静态文件或本报告。
+- Codex Desktop / Cursor 已有进程需要完全重开，才会由各自客户端载入新 MCP 配置；这不是服务端阻塞。
