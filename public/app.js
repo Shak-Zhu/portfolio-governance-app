@@ -445,8 +445,8 @@ function renderGantt(data) {
   const timeHeader = document.getElementById('timeHeader');
   const ganttBody = document.getElementById('ganttBody');
 
-  // 与已接受 Demo 对齐：日视图更密、周视图保留足够宽度显示起止日期。
-  const colWidth = state.ganttScale === 'day' ? 48 : state.ganttScale === 'week' ? 88 : 100;
+  // 周/月均保留主粒度，但为次级刻度留出可读空间。
+  const colWidth = state.ganttScale === 'day' ? 48 : state.ganttScale === 'week' ? 112 : 150;
   const colsCount = data.timeline.length;
   const gridTemplate = `repeat(${colsCount}, ${colWidth}px)`;
 
@@ -480,6 +480,7 @@ function renderGantt(data) {
     const statusClass = p.status === 'completed' ? 'badge completed' : p.is_archived ? 'badge archived' : '';
     const statusLabel = p.is_archived ? '已归档' : p.status === 'completed' ? '已完成' : '执行中';
 
+    const guidesHtml = renderTimelineGuides(data.timeline, state.ganttScale);
     const barsHtml = renderGanttBars(row.bars, data.timeline, colWidth);
 
     return `
@@ -497,6 +498,7 @@ function renderGantt(data) {
           <span class="badge ${statusClass}">${statusLabel}</span>
         </div>
         <div class="timeline" style="grid-template-columns: ${gridTemplate}; --column-width: ${colWidth}px;">
+          ${guidesHtml}
           ${barsHtml}
         </div>
       </div>
@@ -529,6 +531,17 @@ const dependencyTypeLabels = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// 周视图在每周格内显示每日刻度；月视图在每月格内显示每周刻度。
+// 任务的位置仍由真实日期计算，不会被这些视觉刻度取整。
+function renderTimelineGuides(timeline, scale) {
+  if (scale === 'day') return '';
+  return timeline.map((cell, index) => {
+    const dayCount = Math.max(1, Math.round((cell.endMs - cell.startMs + DAY_MS) / DAY_MS));
+    const guideCount = scale === 'week' ? dayCount : Math.ceil(dayCount / 7);
+    return `<span class="timeline-guide ${scale}" style="grid-column: ${index + 1}; grid-row: 1 / -1; --guide-count: ${guideCount};" aria-hidden="true"></span>`;
+  }).join('');
+}
 
 function dateToUtcMs(value) {
   const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
