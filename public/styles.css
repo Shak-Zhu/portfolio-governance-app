@@ -218,22 +218,21 @@ button { font: inherit; border: 0; cursor: pointer; }
   line-height: 14px;
   font-weight: 750;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
-/* 每根条的宽度等于真实日期跨度；短任务不越界覆盖后续任务。 */
+/* 外层严格保持真实日期格宽度；标签可右向延展以完整展示名称。 */
 .step-bar-label {
   display: block;
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   min-height: 28px;
   padding: 6px 8px;
   border-radius: 6px;
   background: inherit;
   color: inherit;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
   box-shadow: 0 2px 5px rgba(20, 47, 82, 0.15);
 }
 
@@ -262,23 +261,6 @@ button { font: inherit; border: 0; cursor: pointer; }
   box-shadow: 0 1px 2px rgba(114, 25, 20, 0.08);
 }
 .dependency-callout span { color: #7f4945; font-weight: 750; }
-.dependency-callout.is-collapsed { width: max-content; max-width: calc(100% - 10px); }
-.dependency-toggle {
-  appearance: none;
-  border: 0;
-  border-radius: 3px;
-  padding: 1px 5px;
-  margin: 0 4px 0 0;
-  background: #f9d9d7;
-  color: #9f2825;
-  font: inherit;
-  font-size: 10px;
-  line-height: 15px;
-  font-weight: 800;
-  cursor: pointer;
-}
-.dependency-toggle:hover { background: #f5c6c3; }
-.dependency-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 
 .tip { margin: 10px 2px; color: var(--muted); font-size: 12px; }
 
