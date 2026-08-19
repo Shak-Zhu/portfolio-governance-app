@@ -16,6 +16,14 @@ let state = {
   editingSteps: {},  // 跟踪编辑中的步骤
   session: null,     // { sub, expiresAt } 或 null
   agentInstall: null, // 登录后从 /api/agent/install 获取的三段安装文案
+  // 汇报筛选：纯浏览器 localStorage，键 = portfolioId，值为该组合顶级项目 id 集合。
+  // null 表示当前组合未应用筛选（默认显示全部）；空数组表示"全部显示"。
+  // 不写入 D1 / 不调用任何 API；切换组合时按 key 隔离。
+  filterSelection: null,
+  // 浮层内的暂存选择（仅在打开对话框时使用，应用后写入 filterSelection）。
+  filterDraft: null,
+  // 当前已加载项目树的组合 ID；用于 fail-safe 清除与跨组合隔离。
+  _projectsLoadedFor: null,
 };
 
 // ========== 工具函数 ==========
@@ -135,6 +143,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupStageDialog();
   setupSessionBox();
   setupBackupControls();
+  setupReportFilterControls();
 
   // 第一步：检查登录态；未登录直接去 /login
   try {
@@ -403,6 +412,8 @@ async function loadPortfolios() {
 
 async function loadCurrentPortfolio() {
   if (!state.currentPortfolioId) return;
+  // 切换组合：立即按 portfolioId 隔离读取 localStorage；旧组合的筛选不会串到新组合。
+  loadFilterFromStorage();
   await Promise.all([loadStats(), loadStages()]);
   loadGantt();
 }
@@ -423,20 +434,232 @@ async function loadStats() {
 // ========== 甘特图 ==========
 async function loadGantt() {
   if (!state.currentPortfolioId) return;
-  
+
   const start = document.getElementById('rangeStart').value || state.ganttRange.start;
   const end = document.getElementById('rangeEnd').value || state.ganttRange.end;
-  
+
   if (!start || !end) {
     setDefaultDateRange();
     return loadGantt();
   }
-  
+
+  let data;
   try {
-    const data = await api(`/portfolios/${state.currentPortfolioId}/gantt?start=${start}&end=${end}&scale=${state.ganttScale}`);
-    renderGantt(data);
+    data = await api(`/portfolios/${state.currentPortfolioId}/gantt?start=${start}&end=${end}&scale=${state.ganttScale}`);
   } catch (e) {
     console.error('加载甘特图失败:', e);
+    return;
+  }
+  state.lastGanttData = data;
+
+  // 必须拉取项目主数据用于"顶级项目 + 子树"过滤和按钮文案。
+  // 读取失败 = 当前组合项目树未知 → 强制按"未应用筛选"渲染，避免用旧组合项目树
+  // 错筛当前甘特造成错误汇报截图。
+  const projectsOk = await ensureProjectsLoaded();
+  if (!projectsOk) {
+    console.warn('当前组合项目树读取失败；汇报筛选已临时禁用，使用完整 data.rows / data.unscheduled 渲染。');
+    state.filterSelection = null;
+  }
+  applyReportFilter(data);
+}
+
+// 仅用于汇报筛选；不会改变甘特几何、时间表头、今日线或 colStart/colEnd。
+// 算法全部委托给公共 filter-core.js，app.js 仅做 DOM 写入与状态同步。
+function applyReportFilter(data) {
+  if (!data) return;
+  const core = window.SHAK_PMO_FILTER_CORE;
+  if (!core) {
+    // 极端情况：filter-core.js 加载失败 → 直接渲染未筛选版本，绝不抛错。
+    renderGantt({ ...data });
+    return;
+  }
+
+  // 用"原始 selection"驱动清理：state.filterSelection 可能是 Set（来自 localStorage）
+  // 或 null（未应用）；filter-core 会基于当前组合项目树清理过期 ID。
+  const visibility = core.computeGanttVisibility(state.projects, data, state.filterSelection);
+
+  // 若清理发现过期 ID → 把清理后的 selection 回写 storage 并更新 state，
+  // 避免下次还读到同一组过期值。
+  if (visibility.sanitized) {
+    state.filterSelection = visibility.effectiveSelection;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      core.persistFilterToStorage(window.localStorage, state.currentPortfolioId, state.filterSelection);
+    }
+  }
+
+  const ui = core.renderFilterUI({
+    effectiveSelection: visibility.effectiveSelection,
+    topLevelTotal: visibility.topLevelTotal,
+  });
+
+  const btnText = document.getElementById('projectFilterBtnText');
+  const btn = document.getElementById('projectFilterBtn');
+  if (btnText) btnText.textContent = ui.buttonText;
+  if (btn) {
+    if (ui.applied) btn.classList.add('active');
+    else btn.classList.remove('active');
+  }
+
+  const statusBar = document.getElementById('filterStatusBar');
+  const statusText = document.getElementById('filterStatusText');
+  if (statusBar && statusText) {
+    if (ui.statusVisible) {
+      statusText.textContent = ui.statusText;
+      statusBar.hidden = false;
+    } else {
+      statusBar.hidden = true;
+    }
+  }
+
+  renderGantt({ ...data, rows: visibility.rows, unscheduled: visibility.unscheduled });
+}
+
+// 返回 boolean：true = 当前组合项目树已就绪；false = 读取失败（state.projects 已被
+// 清空到与 state._projectsLoadedFor 不一致，确保下一次会重试）。
+async function ensureProjectsLoaded() {
+  if (!state.currentPortfolioId) return false;
+  if (
+    state.projects && state.projects.length > 0 &&
+    state._projectsLoadedFor === state.currentPortfolioId
+  ) return true;
+  try {
+    state.projects = await api(`/portfolios/${state.currentPortfolioId}/projects`);
+    state._projectsLoadedFor = state.currentPortfolioId;
+    return true;
+  } catch (e) {
+    console.error('加载项目用于筛选失败:', e);
+    // Fail-safe：清空旧组合的项目树，标记当前组合未就绪。下次 loadGantt / 切换组合时
+    // 会重新读取；在此之前 applyReportFilter 仍可基于 state.projects=[]
+    // 走 computeGanttVisibility 的"清理后为空 → 未应用"路径。
+    state.projects = [];
+    state._projectsLoadedFor = null;
+    return false;
+  }
+}
+
+// ========== 汇报筛选 localStorage 读写（仅按 portfolioId 隔离） ==========
+// 内部实现全部委托给 filter-core.js；这里只剩"何时调用"的薄壳。
+
+function loadFilterFromStorage() {
+  if (!state.currentPortfolioId) { state.filterSelection = null; return; }
+  const core = window.SHAK_PMO_FILTER_CORE;
+  if (!core) { state.filterSelection = null; return; }
+  state.filterSelection = core.loadFilterFromStorage(window.localStorage, state.currentPortfolioId);
+}
+
+function persistFilterToStorage() {
+  if (!state.currentPortfolioId) return;
+  const core = window.SHAK_PMO_FILTER_CORE;
+  if (!core) return;
+  core.persistFilterToStorage(window.localStorage, state.currentPortfolioId, state.filterSelection);
+}
+
+function setupReportFilterControls() {
+  const btn = document.getElementById('projectFilterBtn');
+  const dialog = document.getElementById('projectFilterDialog');
+  const listEl = document.getElementById('projectFilterList');
+  const applyBtn = document.getElementById('projectFilterApplyBtn');
+  const clearBtn = document.getElementById('projectFilterClearBtn');
+  const allBtn = document.getElementById('projectFilterSelectAllBtn');
+  const showAllBarBtn = document.getElementById('filterShowAllBtn');
+  if (!btn || !dialog || !listEl) return;
+
+  const closeDialog = () => { if (dialog.open) dialog.close(); };
+
+  btn.addEventListener('click', () => {
+    openReportFilterDialog();
+  });
+
+  // "全部显示"按钮（顶部状态条）— 立即清空筛选并重渲染
+  showAllBarBtn?.addEventListener('click', () => {
+    state.filterSelection = null;
+    persistFilterToStorage();
+    if (state.lastGanttData) applyReportFilter(state.lastGanttData);
+  });
+
+  // 关闭按钮
+  dialog.querySelector('.close-filter-dialog')?.addEventListener('click', closeDialog);
+
+  // 点击 dialog 背景关闭（与项目对话框一致）
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) closeDialog(); });
+
+  // 取消：不写入状态，关闭即可。
+  clearBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    closeDialog();
+  });
+
+  // 应用：写入 state + localStorage，关闭浮层，重渲染。
+  // 关键安全：若用户清空了所有勾选，禁止应用空 selection（保留至少一个顶级项目）。
+  applyBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const topLevel = (state.projects || []).filter((p) => !p.parent_id);
+    const checked = Array.from(listEl.querySelectorAll('input[type="checkbox"]'))
+      .filter((cb) => cb.checked)
+      .map((cb) => cb.dataset.projectId);
+    if (topLevel.length > 0 && checked.length === 0) {
+      // 零选项安全网：自动恢复"全部选中"并应用，避免空视图。
+      const allIds = topLevel.map((p) => p.id);
+      state.filterSelection = new Set(allIds);
+      persistFilterToStorage();
+      closeDialog();
+      if (state.lastGanttData) applyReportFilter(state.lastGanttData);
+      // 在浮层下次打开时仍能看到"全部勾选"的初始状态
+      return;
+    }
+    state.filterSelection = new Set(checked);
+    persistFilterToStorage();
+    closeDialog();
+    if (state.lastGanttData) applyReportFilter(state.lastGanttData);
+  });
+
+  // 全部显示：勾选所有顶级项目并立即应用。
+  allBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.filterSelection = null;
+    persistFilterToStorage();
+    closeDialog();
+    if (state.lastGanttData) applyReportFilter(state.lastGanttData);
+  });
+}
+
+function openReportFilterDialog() {
+  const dialog = document.getElementById('projectFilterDialog');
+  const listEl = document.getElementById('projectFilterList');
+  if (!dialog || !listEl) return;
+  // 当前组合下的顶级项目（按主数据顺序，保持可读）
+  const topLevel = (state.projects || []).filter((p) => !p.parent_id);
+
+  // 浮层草稿：若当前已应用筛选，初始勾选与已应用集合一致；
+  // 否则初始全部勾选（"全选"语义便于逐项取消）。
+  const currentlyApplied = state.filterSelection instanceof Set;
+  const draft = new Set();
+  if (currentlyApplied) {
+    state.filterSelection.forEach((id) => draft.add(id));
+  } else {
+    topLevel.forEach((p) => draft.add(p.id));
+  }
+  state.filterDraft = draft;
+
+  listEl.innerHTML = topLevel.map((p) => {
+    const checked = draft.has(p.id) ? 'checked' : '';
+    const owner = getOwner(p);
+    const stage = getStageName(p.stage);
+    const childCount = (state.projects || []).filter((c) => c.parent_id === p.id).length;
+    return `
+      <label class="project-filter-item">
+        <input type="checkbox" data-project-id="${escapeHtml(p.id)}" ${checked}/>
+        <span><strong>${escapeHtml(p.title)}</strong>
+          <small style="color: var(--muted); font-weight: 600;">${escapeHtml(owner)} · ${escapeHtml(stage)}${childCount ? ` · 含 ${childCount} 个子项目` : ''}</small>
+        </span>
+      </label>
+    `;
+  }).join('') || '<p class="empty" style="padding: 18px;">当前组合暂无顶级项目。</p>';
+
+  if (typeof dialog.showModal === 'function') {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute('open', '');
   }
 }
 

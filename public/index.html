@@ -82,12 +82,23 @@
       <div class="gantt-card">
         <div class="gantt-scroll">
           <div class="gantt-header">
-            <div class="col-project">项目 / 业务预期</div>
+            <div class="col-project">
+              <span class="col-project-label">项目 / 业务预期</span>
+              <button id="projectFilterBtn" class="project-filter-btn" type="button"
+                      aria-haspopup="dialog" aria-controls="projectFilterDialog"
+                      title="汇报筛选：仅显示当前组合下选中的顶级项目及其完整子树">
+                <span id="projectFilterBtnText">显示项目 n/n</span>
+              </button>
+            </div>
             <div class="col-status">Owner · Stage · Health</div>
             <div id="timeHeader" class="time-header"></div>
           </div>
           <div id="ganttBody"></div>
         </div>
+      </div>
+      <div id="filterStatusBar" class="filter-status-bar" hidden>
+        <span id="filterStatusText">汇报筛选：仅显示 0 / 0 个顶级项目</span>
+        <button id="filterShowAllBtn" class="secondary" type="button">全部显示</button>
       </div>
       <p class="tip">每根条代表一条可维护的步骤计划，条内显示步骤名称。项目日期由步骤自动汇总，不再单独画第二份计划。</p>
 
@@ -253,6 +264,26 @@
         </ul>
       </div>
     </section>
+
+    <!-- 汇报筛选对话框（WP-011）：仅顶级项目复选，用于截图 -->
+    <dialog id="projectFilterDialog" class="project-filter-dialog">
+      <form id="projectFilterForm" method="dialog">
+        <div class="dialog-title">
+          <div>
+            <p class="eyebrow">REPORT FILTER</p>
+            <h2>汇报筛选</h2>
+          </div>
+          <button type="button" class="icon-btn close-filter-dialog" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-note">只列当前组合的顶级项目；选中的顶级项目保留其全部后代、步骤条、依赖说明和未排期工作包。未选项目完全隐藏，不占空白行。筛选只保存到当前浏览器 localStorage，不写入项目或审计。</p>
+        <div id="projectFilterList" class="project-filter-list"></div>
+        <div class="dialog-foot">
+          <button id="projectFilterSelectAllBtn" type="button" class="secondary">全部显示</button>
+          <button id="projectFilterClearBtn" type="button" class="secondary">取消</button>
+          <button id="projectFilterApplyBtn" type="button" class="primary">应用</button>
+        </div>
+      </form>
+    </dialog>
   </main>
 
   <!-- 项目编辑对话框 -->
@@ -370,6 +401,7 @@
     </form>
   </dialog>
 
+  <script type="module" src="/filter-core.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
