@@ -4,6 +4,16 @@
 
 > 命名说明：用户可见的网页标题、H1、产品文档统一使用"Shak 项目组合治理系统"。技术资源标识（Worker `pmo-governance`、D1 `pmo-governance-prod`、域名 `pmo.pmoforms.com`、GitHub 仓库 slug）不随命名变更而改名。
 
+## 交给其它 Agent 复用
+
+仓库已包含正式前端、Worker 后端、原生 Bearer MCP（31 工具）、完整 Skill Bundle、数据库迁移和备份恢复实现。
+
+- **完整重建到新账号/域名**：从 [AGENTS.md](AGENTS.md) 和 [重建手册](docs/REBUILD.md) 开始，使用 [独立配置模板](wrangler.reuse.example.toml)。手册末尾提供可复制给其它 Agent 的完整指令。
+- **仅接入现有系统维护项目**：登录系统的「Agent 接入」复制安装指令；Skill 的精确目录是 [agent-skills/shak-project-portfolio-governance](agent-skills/shak-project-portfolio-governance)，包含六个内容文件与一个 manifest。
+- **本次发布证据**：[复用发布记录](docs/REUSE-RELEASE.md)。
+
+Git 保存程序与规则。线上项目数据、R2 备份和真实凭据保存在独立环境中；新建实例默认空库。
+
 ## 技术栈
 
 - **前端**: 原生 HTML/CSS/JavaScript（中文界面）
@@ -28,14 +38,14 @@
 
 ### 前置条件
 
-- Node.js >= 18
-- Wrangler CLI (`npm i -g wrangler`)
+- Node.js 22 LTS（本次完整验证环境为 Node.js 26）
+- 仓库 lockfile 固定的 Wrangler CLI（通过 `npx wrangler` 使用）
 - Cloudflare 账号（已配置 Wrangler OAuth）
 
 ### 1. 安装依赖
 
 ```bash
-npm install
+npm ci
 ```
 
 ### 2. 配置 D1 数据库
@@ -47,15 +57,17 @@ npm install
 3. 创建新数据库，名称：`pmo-governance-prod`
 4. 复制 Database ID
 
-**方式二：本地创建测试数据库**
+**方式二：本地模拟数据库**
 
 ```bash
-npm run db:create
+npx wrangler d1 migrations apply DB --local
 ```
 
 ### 3. 更新 wrangler.toml
 
-将 `database_id` 替换为实际值：
+以下配置属于既有实例。重新搭建请使用 `wrangler.reuse.example.toml`，按 [重建手册](docs/REBUILD.md) 创建自己的主库、隔离恢复库和 R2，并用独立配置执行命令。
+
+主库 binding 示例：
 
 ```toml
 [[d1_databases]]
@@ -99,7 +111,7 @@ npm run dev
 
 Worker 会把非 `/api/*` 与非 `/mcp` 请求转交给 `[assets]` 绑定（`public/` 目录），因此直接访问以下路径均返回 200：
 
-- `/login`、`/index.html`、`/` → 网页（text/html）
+- `/login` → 登录页（200 text/html）；`/index.html`、`/` 未登录时跳转登录页，登录后返回网页
 - `/app.js`、`/styles.css`、`/login.js` → 前端静态资源
 - `/api/health` → API 健康检查（application/json）
 
@@ -155,7 +167,7 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 - 网页登录与保护：未登录 `GET /` → 302 `/login`、登录成功带 Cookie 可访问、`/api/agent/install` 含 `launchctl setenv` + `--bearer-token-env-var`、logout 立即失效
 - `/mcp` 永不返回 302/HTML（即使带 Cookie）
 
-输出默认 25 项断言全过；任何失败都会打印根因（不静默）。
+断言数量随回归增加，以脚本本次实际输出为准；任何失败都会打印根因。
 
 ## API 端点
 
@@ -267,6 +279,9 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 | end_date | TEXT | 结束日期 |
 | status | TEXT | 状态 |
 | sort_order | INTEGER | 排序 |
+| dependency_type | TEXT | none / finish_to_start / input_required / business_gate / external_dependency |
+| dependency_detail | TEXT | 前置依赖或关键输入说明 |
+| blocked_impact | TEXT | 阻塞影响 |
 
 ### stages（Stage 定义）
 
@@ -323,13 +338,14 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 ### 恢复演练
 
 - 登录后访问顶部「备份管理」标签，可查看备份列表、手动触发备份、执行恢复演练。
-- 恢复演练仅恢复到隔离/测试 D1（如 `TEST_DB`），**严禁覆盖生产 D1**。
+- 恢复演练仅恢复到固定绑定 `RESTORE_DRILL_DB`，由服务端选择目标。
 - 演练验证：JSON 结构、`contentSha256`、表存在、逐表行数、逐表 SHA-256。
 - 生产数据恢复需由管理员手动操作。
 
 ### 备份 API（需登录）
 
 - `GET /api/backups` — 列出最近备份（key、size、createdAt、contentSha256）
+- `GET /api/backups/status` — 返回隔离恢复库是否可用
 - `POST /api/backups` — 手动触发一次备份
 - `POST /api/backups/restore` — 执行恢复演练（仅隔离 D1）
 
@@ -440,7 +456,7 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 
 - 无任意 SQL、任意 HTTP 转发或自由文本万能执行工具；仅强类型工具。
 - 代码、网页、Skill、manifest、测试与报告中**不含任何 token/secret/cookie/client secret**。
-- 本工作包**不执行** `wrangler deploy`，不创建或修改 Cloudflare Access / Zero Trust / OAuth App / KV / D1 / R2 / DNS / 域名 / secret / Git remote，不修改既有数据库 schema。
+- 业务 Agent 维护项目时走 MCP；系统管理员部署或重建时按 [重建手册](docs/REBUILD.md) 管理云资源和 Secrets。
 
 ## 部署前检查
 
@@ -450,14 +466,15 @@ MCP_ORIGIN=http://127.0.0.1:8788 MCP_TOKEN=$(grep SHAK_PMO_MCP_TOKEN .dev.vars |
 4. ✅ `npm run db:migrate` Migration 正常（连续两次幂等）
 5. ✅ `npm run db:smoke` API 测试通过（带 Cookie）
 6. ✅ `npm run mcp:test` MCP Bearer 集成测试通过
-7. ✅ `npm run skill:build` 重新生成 manifest，SHA-256 校验通过
+7. ✅ `node scripts/validate-skill-consistency.mjs` 验证 manifest；仅修改 Skill 后才重新生成清单
 
 ## 目录结构
 
 ```
 portfolio-governance-app/
 ├── migrations/
-│   └── 0001_initial_schema.sql
+│   ├── 0001_initial_schema.sql
+│   └── 0002_step_dependency_fields.sql
 ├── drizzle/
 │   └── seed.sql
 ├── public/

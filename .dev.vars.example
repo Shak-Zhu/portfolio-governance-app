@@ -1,0 +1,11 @@
+# 本地开发 Worker Secrets（已被 .gitignore 排除）
+# 复制本文件为 .dev.vars 后填入临时值；生产由 Codex 通过 `wrangler secret put` 注入。
+
+SHAK_PMO_WEB_LOGIN_EMAIL="owner@example.com"
+SHAK_PMO_WEB_LOGIN_PASSWORD="please-replace-with-strong-local-password"
+SHAK_PMO_SESSION_SECRET="dev-session-secret-replace-with-32-bytes-random"
+SHAK_PMO_MCP_TOKEN="dev-mcp-bearer-token-replace-with-32-bytes-random"
+
+# 一键安装使用的 Skill 发布指针（可选，本地未配置时 Agent 安装接口返回 503）。
+# 正式使用填入已推送、可通过 GitHub raw 访问的 40 位 commit SHA；不使用 main。
+# SHAK_PMO_SKILL_SOURCE_COMMIT=""
